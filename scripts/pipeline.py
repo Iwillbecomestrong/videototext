@@ -100,7 +100,9 @@ class KnowledgeExtractionPipeline:
             downloads_dir.mkdir(parents=True, exist_ok=True)
 
             try:
-                audio_path = prepare_audio_source(input_source, str(downloads_dir))
+                audio_path = prepare_audio_source(
+                    input_source, str(downloads_dir), cookies=cookies
+                )
                 if not title:
                     if sub_result and sub_result.title:
                         title = sub_result.title

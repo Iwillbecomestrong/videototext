@@ -247,17 +247,22 @@ def fetch_online_subtitles(
             error="yt-dlp is not installed. Run `pip install yt-dlp` to extract online subtitles.",
         )
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com",
+    }
+    if cookies and isinstance(cookies, str) and not (cookies.endswith(".txt")):
+        headers["Cookie"] = cookies
+
     ydl_opts = {
         "skip_download": True,
         "quiet": True,
         "no_warnings": True,
+        "http_headers": headers,
     }
 
-    if cookies:
-        if isinstance(cookies, str) and (cookies.endswith(".txt") or "/" in cookies or "\\" in cookies):
-            ydl_opts["cookiefile"] = cookies
-        else:
-            ydl_opts["http_headers"] = {"Cookie": cookies}
+    if cookies and isinstance(cookies, str) and (cookies.endswith(".txt") or "/" in cookies or "\\" in cookies):
+        ydl_opts["cookiefile"] = cookies
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

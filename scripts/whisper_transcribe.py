@@ -44,9 +44,28 @@ def _get_faster_whisper_model(
     model_size: str = "base", device: str = "auto", compute_type: str = "auto"
 ):
     """Factory helper to obtain a faster_whisper WhisperModel instance."""
+    import os
+    if "HF_HUB_DISABLE_SYMLINKS_WARNING" not in os.environ:
+        os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
     from faster_whisper import WhisperModel
 
-    return WhisperModel(model_size, device=device, compute_type=compute_type)
+    local_candidates = [
+        os.path.join("models", f"faster-whisper-{model_size}"),
+        os.path.join("models", model_size),
+    ]
+    model_path = model_size
+    for cand in local_candidates:
+        if os.path.isdir(cand) and os.path.exists(os.path.join(cand, "model.bin")):
+            model_path = cand
+            break
+
+    try:
+        return WhisperModel(model_path, device=device, compute_type=compute_type)
+    except RuntimeError as e:
+        if "cublas" in str(e).lower() or device != "cpu":
+            # Graceful fallback to CPU if CUDA library is missing
+            return WhisperModel(model_path, device="cpu", compute_type="int8")
+        raise
 
 
 def transcribe_audio(
@@ -66,8 +85,25 @@ def transcribe_audio(
         if initial_prompt:
             transcribe_kwargs["initial_prompt"] = initial_prompt
 
-        segments, info = model.transcribe(audio_path, **transcribe_kwargs)
-        return segments_to_srt(segments)
+        try:
+            segments, info = model.transcribe(audio_path, **transcribe_kwargs)
+            return segments_to_srt(segments)
+        except RuntimeError as e:
+            if "cublas" in str(e).lower():
+                from faster_whisper import WhisperModel
+                local_candidates = [
+                    os.path.join("models", f"faster-whisper-{model_size}"),
+                    os.path.join("models", model_size),
+                ]
+                model_path = model_size
+                for cand in local_candidates:
+                    if os.path.isdir(cand) and os.path.exists(os.path.join(cand, "model.bin")):
+                        model_path = cand
+                        break
+                cpu_model = WhisperModel(model_path, device="cpu", compute_type="int8")
+                segments, info = cpu_model.transcribe(audio_path, **transcribe_kwargs)
+                return segments_to_srt(segments)
+            raise
     except (ImportError, ModuleNotFoundError):
         pass
 

@@ -56,8 +56,8 @@ def extract_audio_from_local_video(video_path: str, output_dir: str) -> str:
         raise RuntimeError(f"ffmpeg failed to extract audio: {e.stderr.decode(errors='replace')}")
 
 
-def download_audio_from_url(url: str, output_dir: str) -> str:
-    """Download audio stream from URL via yt-dlp."""
+def download_audio_from_url(url: str, output_dir: str, cookies: Optional[str] = None) -> str:
+    """Download audio stream from URL via yt-dlp with anti-bot headers."""
     try:
         import yt_dlp
     except ImportError:
@@ -69,9 +69,17 @@ def download_audio_from_url(url: str, output_dir: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "%(id)s.%(ext)s")
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com",
+    }
+    if cookies and isinstance(cookies, str) and not (cookies.endswith(".txt")):
+        headers["Cookie"] = cookies
+
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": output_template,
+        "http_headers": headers,
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -83,23 +91,30 @@ def download_audio_from_url(url: str, output_dir: str) -> str:
         "no_warnings": True,
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        video_id = info.get("id", "audio")
-        target_wav = out_dir / f"{video_id}.wav"
-        if target_wav.exists():
-            return str(target_wav)
-        # Check any matching audio files in output dir
-        for f in out_dir.glob(f"{video_id}.*"):
-            if f.suffix in [".wav", ".mp3", ".m4a", ".aac", ".opus"]:
-                return str(f)
-        raise RuntimeError(f"Downloaded audio file could not be located in {out_dir}")
+    if cookies and isinstance(cookies, str) and (cookies.endswith(".txt") or "/" in cookies or "\\" in cookies):
+        ydl_opts["cookiefile"] = cookies
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            video_id = info.get("id", "audio")
+            target_wav = out_dir / f"{video_id}.wav"
+            if target_wav.exists():
+                return str(target_wav)
+            for f in out_dir.glob(f"{video_id}.*"):
+                if f.suffix in [".wav", ".mp3", ".m4a", ".aac", ".opus"]:
+                    return str(f)
+            raise RuntimeError(f"Downloaded audio file could not be located in {out_dir}")
+    except Exception as e:
+        raise RuntimeError(f"音频下载失败 ({str(e)})。如果该视频受权限保护，请提供 B站 Cookie。")
 
 
-def prepare_audio_source(source: str, output_dir: str = "./downloads") -> str:
+def prepare_audio_source(
+    source: str, output_dir: str = "./downloads", cookies: Optional[str] = None
+) -> str:
     """Prepare an audio file path from either a URL or local file."""
     if is_url(source):
-        return download_audio_from_url(source, output_dir)
+        return download_audio_from_url(source, output_dir, cookies=cookies)
 
     spath = Path(source)
     if not spath.exists():

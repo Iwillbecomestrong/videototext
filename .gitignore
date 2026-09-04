@@ -20,3 +20,10 @@ docs/work/*.contract-check.tmp
 
 # AgentChat & CDP runs
 .gpt-web/
+
+# Local models and media files
+models/
+*.m4a
+*.mp3
+*.mp4
+*.wav
