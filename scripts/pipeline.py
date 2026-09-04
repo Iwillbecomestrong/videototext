@@ -98,18 +98,40 @@ class KnowledgeExtractionPipeline:
 
             downloads_dir = self.output_base_dir / "downloads"
             downloads_dir.mkdir(parents=True, exist_ok=True)
-            audio_path = prepare_audio_source(input_source, str(downloads_dir))
 
-            if not title:
-                if sub_result and sub_result.title:
-                    title = sub_result.title
+            try:
+                audio_path = prepare_audio_source(input_source, str(downloads_dir))
+                if not title:
+                    if sub_result and sub_result.title:
+                        title = sub_result.title
+                    else:
+                        title = Path(input_source).stem
+
+                if progress_callback:
+                    progress_callback("正在使用 Whisper 进行语音转写...", 0.5)
+
+                raw_srt = transcribe_audio(audio_path)
+            except Exception as e:
+                # If in mock mode (e.g. user entered a dummy test URL like BV123456 or offline demo),
+                # provide rich simulated sample subtitles instead of crashing.
+                if mock:
+                    if progress_callback:
+                        progress_callback("检测到 Mock 演示模式，自动加载电机实战模拟教学字幕...", 0.5)
+                    title = "STM32G431_FOC算法实战教程_演示"
+                    raw_srt = (
+                        "1\n00:00:01,000 --> 00:00:04,500\n"
+                        "欢迎来到 foo c 驱动开发教程，今天配合 cooper mix 进行底层配置。\n\n"
+                        "2\n00:00:05,000 --> 00:00:09,200\n"
+                        "我们将使用 stm 32 主控，通过 无法加 上位机实时观测马鞍波和 sv pwm 波形。\n\n"
+                        "3\n00:00:10,000 --> 00:00:14,000\n"
+                        "核心算法包括 clark变换 和 park变换，并利用 p i 调节器实现电流环闭环控制。\n"
+                    )
                 else:
-                    title = Path(input_source).stem
-
-            if progress_callback:
-                progress_callback("正在使用 Whisper 进行语音转写...", 0.5)
-
-            raw_srt = transcribe_audio(audio_path)
+                    raise RuntimeError(
+                        f"无法获取视频音频或转录字幕 ({str(e)})。"
+                        "如果视频链接为演示假链接，可添加 `--mock` 参数进行体验；"
+                        "若是真实链接，请检查网络连接或是否需要配置 B站 Cookie。"
+                    )
 
         if not title:
             title = "Video_Knowledge"
