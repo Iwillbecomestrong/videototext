@@ -65,7 +65,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🤖 LLM 智能整理配置")
-    st.caption("留空则自动降级为离线规则摘要生成。支持 DeepSeek、Qwen、OpenAI 等兼容接口。")
+    use_mock_mode = st.checkbox(
+        "💡 启用 Mock 演示模式 (免 API Key 体验)",
+        value=False,
+        help="开启后自动生成高质量结构化工程笔记样本，适合快速测试或无 API Key 场景",
+    )
 
     env_key = os.environ.get("OPENAI_API_KEY", "")
     api_key_input = st.text_input(
@@ -73,7 +77,7 @@ with st.sidebar:
         value=env_key,
         type="password",
         placeholder="sk-...",
-        help="OpenAI 兼容 API 密钥",
+        help="OpenAI 兼容 API 密钥（DeepSeek / Qwen / OpenAI）",
     )
 
     env_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -93,6 +97,14 @@ with st.sidebar:
     )
 
     st.markdown("---")
+    st.subheader("🍪 B站 / 平台 Cookie 设置")
+    cookie_input = st.text_input(
+        "Cookie / SESSDATA (可选)",
+        value="",
+        placeholder="SESSDATA=xxxxxx; 或 cookies.txt 路径",
+        help="部分 B站 视频或大会员字幕需登录权限，填入 Cookie 可直接下载官方字幕",
+    )
+
     force_whisper = st.checkbox(
         "强制启用 Whisper 本地转写",
         value=False,
@@ -166,6 +178,8 @@ if start_btn:
                 base_url=base_url_input if base_url_input.strip() else None,
                 model=model_input if model_input.strip() else None,
                 force_whisper=force_whisper,
+                cookies=cookie_input.strip() if cookie_input.strip() else None,
+                mock=use_mock_mode,
                 progress_callback=update_progress,
             )
 

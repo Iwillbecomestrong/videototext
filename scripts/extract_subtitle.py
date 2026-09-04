@@ -1,8 +1,9 @@
-"""Extract online video subtitles and parse VTT/SRT formats."""
+"""Extract online video subtitles and parse VTT/SRT/Bilibili formats."""
 
+import json
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import urllib.request
 
 
@@ -32,13 +33,49 @@ def format_srt_timestamp(ts: str) -> str:
     return ts
 
 
+def format_seconds_to_srt(seconds: float) -> str:
+    """Convert floating seconds to SRT timestamp HH:MM:SS,mmm."""
+    if seconds < 0:
+        seconds = 0.0
+    total_ms = int(round(seconds * 1000))
+    ms = total_ms % 1000
+    total_sec = total_ms // 1000
+    sec = total_sec % 60
+    total_min = total_sec // 60
+    minute = total_min % 60
+    hour = total_min // 60
+    return f"{hour:02d}:{minute:02d}:{sec:02d},{ms:03d}"
+
+
+def bilibili_json_to_srt(data: Dict[str, Any]) -> str:
+    """Convert Bilibili JSON subtitle data (with 'body' key) into standard SRT format."""
+    body = data.get("body", [])
+    if not body:
+        return ""
+
+    blocks = []
+    for seq, item in enumerate(body, 1):
+        from_sec = float(item.get("from", 0.0))
+        to_sec = float(item.get("to", 0.0))
+        content = str(item.get("content", "")).strip()
+        if not content:
+            continue
+
+        start_ts = format_seconds_to_srt(from_sec)
+        end_ts = format_seconds_to_srt(to_sec)
+        block = f"{seq}\n{start_ts} --> {end_ts}\n{content}"
+        blocks.append(block)
+
+    return "\n\n".join(blocks) + "\n" if blocks else ""
+
+
 def vtt_to_srt(vtt_content: str) -> str:
     """Convert WebVTT formatted subtitles into standard SubRip (SRT) format."""
     if not vtt_content or not vtt_content.strip():
         return ""
 
     lines = vtt_content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    
+
     timestamp_pattern = re.compile(
         r"((?:\d{1,2}:)?\d{2}:\d{2}[\.,]\d{3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[\.,]\d{3})"
     )
@@ -47,73 +84,76 @@ def vtt_to_srt(vtt_content: str) -> str:
     blocks = []
     current_timestamp = ""
     current_lines: List[str] = []
-    
+
     i = 0
     total = len(lines)
     while i < total:
         line = lines[i].strip()
-        
+
         # Skip WebVTT header and styling notes
-        if line.startswith("WEBVTT") or line.startswith("NOTE") or line.startswith("Kind:") or line.startswith("Language:"):
+        if (
+            line.startswith("WEBVTT")
+            or line.startswith("NOTE")
+            or line.startswith("Kind:")
+            or line.startswith("Language:")
+        ):
             i += 1
             continue
-            
+
         ts_match = timestamp_pattern.search(line)
         if ts_match:
-            # If we had a previous block, record it
+            # If we had a previous block, record it preserving internal line breaks
             if current_timestamp and current_lines:
-                text = " ".join([l for l in current_lines if l])
+                text = "\n".join([l for l in current_lines if l])
                 blocks.append((current_timestamp, text))
                 current_lines = []
-                
+
             start_ts = format_srt_timestamp(ts_match.group(1))
             end_ts = format_srt_timestamp(ts_match.group(2))
             current_timestamp = f"{start_ts} --> {end_ts}"
             i += 1
             continue
-            
+
         if current_timestamp:
             if not line:
                 if current_lines:
-                    text = " ".join([l for l in current_lines if l])
+                    text = "\n".join([l for l in current_lines if l])
                     blocks.append((current_timestamp, text))
                     current_timestamp = ""
                     current_lines = []
             else:
-                # Clean tags and styling from text
+                # Clean inline tags and styling from text
                 cleaned_line = tag_pattern.sub("", line).strip()
                 # Ignore isolated numeric index lines in source VTT
                 if not (cleaned_line.isdigit() and len(current_lines) == 0):
                     if cleaned_line:
                         current_lines.append(cleaned_line)
         i += 1
-        
+
     if current_timestamp and current_lines:
-        text = " ".join([l for l in current_lines if l])
+        text = "\n".join([l for l in current_lines if l])
         blocks.append((current_timestamp, text))
 
-    # Build standard numbered SRT blocks, de-duplicating adjacent identical text
+    # Build standard numbered SRT blocks
     srt_blocks = []
     seq = 1
-    last_text = ""
     for ts, text in blocks:
         if not text:
             continue
-        if text == last_text and srt_blocks:
-            continue
         srt_blocks.append(f"{seq}\n{ts}\n{text}")
-        last_text = text
         seq += 1
 
     return "\n\n".join(srt_blocks) + "\n" if srt_blocks else ""
 
 
 def fetch_online_subtitles(
-    url: str, langs: Optional[List[str]] = None
+    url: str,
+    langs: Optional[List[str]] = None,
+    cookies: Optional[str] = None,
 ) -> SubtitleResult:
-    """Fetch online video subtitles using yt-dlp if available."""
+    """Fetch online video subtitles (Bilibili/YouTube) using yt-dlp if available."""
     if langs is None:
-        langs = ["zh-Hans", "zh-CN", "zh", "en", "en-US"]
+        langs = ["ai-zh", "zh-Hans", "zh-CN", "zh", "en", "en-US"]
 
     try:
         import yt_dlp
@@ -124,11 +164,20 @@ def fetch_online_subtitles(
             error="yt-dlp is not installed. Run `pip install yt-dlp` to extract online subtitles.",
         )
 
+    is_bilibili = "bilibili.com" in url or "b23.tv" in url
+
     ydl_opts = {
         "skip_download": True,
         "quiet": True,
         "no_warnings": True,
     }
+
+    if cookies:
+        if isinstance(cookies, str) and (cookies.endswith(".txt") or "/" in cookies or "\\" in cookies):
+            ydl_opts["cookiefile"] = cookies
+        else:
+            # Pass custom cookie header if string
+            ydl_opts["http_headers"] = {"Cookie": cookies}
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -151,14 +200,16 @@ def fetch_online_subtitles(
             chosen_ext = "vtt"
             chosen_lang = None
 
+            # Flatten lookup
             for lang in langs:
                 for sub_dict in [subtitles, auto_subs]:
                     if lang in sub_dict and sub_dict[lang]:
                         formats = sub_dict[lang]
-                        # Prefer vtt or srt
+                        # Prefer json (bilibili) / vtt / srt
+                        json_fmt = next((f for f in formats if f.get("ext") in ["json", "json3"]), None)
                         vtt_fmt = next((f for f in formats if f.get("ext") == "vtt"), None)
                         srt_fmt = next((f for f in formats if f.get("ext") == "srt"), None)
-                        selected = vtt_fmt or srt_fmt or formats[0]
+                        selected = json_fmt or vtt_fmt or srt_fmt or formats[0]
                         chosen_url = selected.get("url")
                         chosen_ext = selected.get("ext", "vtt")
                         chosen_lang = lang
@@ -167,22 +218,38 @@ def fetch_online_subtitles(
                     break
 
             if not chosen_url:
+                hint = ""
+                if is_bilibili:
+                    hint = " (提示：部分B站视频字幕需登录，可配置 Cookie/SESSDATA 后重试，或自动降级为 Whisper 识别)"
                 return SubtitleResult(
                     has_subtitles=False,
                     title=title,
                     duration=duration,
                     source_url=url,
-                    error="No official or auto-generated subtitle found in specified languages.",
+                    error=f"No official or auto-generated subtitle found in specified languages.{hint}",
                 )
 
             # Fetch the subtitle content
-            req = urllib.request.Request(
-                chosen_url, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                content = resp.read().decode("utf-8", errors="replace")
+            headers = {"User-Agent": "Mozilla/5.0"}
+            if cookies and isinstance(cookies, str) and not (cookies.endswith(".txt")):
+                headers["Cookie"] = cookies
 
-            if chosen_ext == "vtt" or "WEBVTT" in content:
+            req = urllib.request.Request(chosen_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw_bytes = resp.read()
+
+            try:
+                content = raw_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                content = raw_bytes.decode("gbk", errors="replace")
+
+            if chosen_ext in ["json", "json3"] or content.strip().startswith("{"):
+                try:
+                    data = json.loads(content)
+                    srt_text = bilibili_json_to_srt(data)
+                except Exception:
+                    srt_text = vtt_to_srt(content)
+            elif chosen_ext == "vtt" or "WEBVTT" in content:
                 srt_text = vtt_to_srt(content)
             else:
                 srt_text = content
@@ -197,8 +264,11 @@ def fetch_online_subtitles(
             )
 
     except Exception as e:
+        hint = ""
+        if is_bilibili and ("login" in str(e).lower() or "403" in str(e) or "cookie" in str(e).lower()):
+            hint = " (B站接口限制，请在 UI 或命令行传入 Cookie/SESSDATA，或直接使用 Whisper 离线转录)"
         return SubtitleResult(
             has_subtitles=False,
             source_url=url,
-            error=f"Error extracting subtitle: {str(e)}",
+            error=f"Error extracting subtitle: {str(e)}{hint}",
         )

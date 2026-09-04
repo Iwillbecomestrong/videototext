@@ -62,6 +62,8 @@ class KnowledgeExtractionPipeline:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         force_whisper: bool = False,
+        cookies: Optional[str] = None,
+        mock: bool = False,
         progress_callback: Optional[Callable[[str, float], None]] = None,
     ) -> PipelineResult:
         """Execute extraction pipeline on URL or local file."""
@@ -82,7 +84,7 @@ class KnowledgeExtractionPipeline:
         sub_result = None
         if source_is_url and not force_whisper:
             try:
-                sub_result = fetch_online_subtitles(input_source)
+                sub_result = fetch_online_subtitles(input_source, cookies=cookies)
                 if sub_result and sub_result.has_subtitles and sub_result.subtitle_text:
                     raw_srt = sub_result.subtitle_text
                     title = sub_result.title
@@ -131,6 +133,7 @@ class KnowledgeExtractionPipeline:
             api_key=api_key,
             base_url=base_url,
             model=model,
+            mock=mock,
         )
 
         # Step 4: Persist all artifacts
@@ -189,6 +192,8 @@ def main():
     parser.add_argument("--base-url", default=None, help="OpenAI-compatible Base URL")
     parser.add_argument("--model", default=None, help="Model name (e.g. gpt-4o, deepseek-chat)")
     parser.add_argument("--force-whisper", action="store_true", help="Force Whisper transcription instead of online subtitles")
+    parser.add_argument("--cookies", default=None, help="Cookie string or path to cookies.txt for Bilibili/YouTube")
+    parser.add_argument("--mock", action="store_true", help="Enable high-fidelity Mock LLM mode for testing/demo")
 
     args = parser.parse_args()
 
@@ -201,6 +206,8 @@ def main():
         base_url=args.base_url,
         model=args.model,
         force_whisper=args.force_whisper,
+        cookies=args.cookies,
+        mock=args.mock,
         progress_callback=lambda msg, progress: print(f"[{int(progress*100)}%] {msg}"),
     )
 

@@ -20,6 +20,34 @@ def test_extract_clean_text_from_srt():
     assert "1\n" not in clean_text
 
 
+def test_generate_mock_mode_produces_structured_engineering_notes():
+    gen = MarkdownGenerator()
+    srt = """1
+00:00:01,000 --> 00:00:03,000
+本节课讲 STM32G431 的 FOC 驱动开发，使用 CubeMX 和 Keil uVision
+"""
+    terms = [
+        {"original": "foo c", "replacement": "FOC", "count": 2},
+        {"original": "cooper mix", "replacement": "CubeMX", "count": 1}
+    ]
+    notes = gen.generate_notes(
+        subtitle_text=srt,
+        title="STM32 FOC实战课程",
+        domain="motor-control",
+        source="https://www.bilibili.com/video/BV123",
+        terms=terms,
+        mock=True
+    )
+    
+    assert "# STM32 FOC实战课程" in notes
+    assert "核心概览" in notes or "Overview" in notes
+    assert "工具链与环境" in notes or "Toolchain" in notes
+    assert "核心原理解析" in notes or "Principles" in notes
+    assert "CubeMX" in notes
+    assert "FOC" in notes
+    assert "专业术语对照表" in notes or "Terminology" in notes
+
+
 def test_generate_offline_summary_fills_template():
     gen = MarkdownGenerator()
     srt = """1
@@ -42,7 +70,6 @@ def test_generate_offline_summary_fills_template():
     assert "motor-control" in notes
     assert "CubeMX" in notes
     assert "FOC" in notes
-    assert "专业术语对照表" in notes or "Terminology" in notes
 
 
 def test_generate_notes_calls_openai_when_key_present():

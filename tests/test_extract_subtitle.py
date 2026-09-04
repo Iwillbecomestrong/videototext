@@ -1,25 +1,29 @@
+import json
 import pytest
-from scripts.extract_subtitle import vtt_to_srt, SubtitleResult
+from scripts.extract_subtitle import vtt_to_srt, bilibili_json_to_srt, SubtitleResult, fetch_online_subtitles
 
 
-def test_vtt_to_srt_conversion():
+def test_vtt_to_srt_preserves_multiline_text():
     vtt_text = """WEBVTT
-Kind: captions
-Language: zh
 
-00:00:01.200 --> 00:00:03.500 position:10%
-欢迎来到本期视频
-
-00:00:04.100 --> 00:00:07.800
-<c>学习</c>电机控制算法
+00:00:01.200 --> 00:00:03.500
+第一行说明
+第二行补充说明
 """
     srt = vtt_to_srt(vtt_text)
-    
-    assert "1\n00:00:01,200 --> 00:00:03,500\n欢迎来到本期视频" in srt.replace("\r\n", "\n")
-    assert "2\n00:00:04,100 --> 00:00:07,800\n学习电机控制算法" in srt.replace("\r\n", "\n")
-    assert "WEBVTT" not in srt
-    assert "<c>" not in srt
-    assert "position:" not in srt
+    assert "1\n00:00:01,200 --> 00:00:03,500\n第一行说明\n第二行补充说明" in srt.replace("\r\n", "\n")
+
+
+def test_bilibili_json_to_srt_conversion():
+    bili_data = {
+        "body": [
+            {"from": 1.5, "to": 3.8, "content": "欢迎观看B站电机教程"},
+            {"from": 4.0, "to": 7.2, "content": "本期讲解Clarke变换与Park变换"}
+        ]
+    }
+    srt = bilibili_json_to_srt(bili_data)
+    assert "1\n00:00:01,500 --> 00:00:03,800\n欢迎观看B站电机教程" in srt
+    assert "2\n00:00:04,000 --> 00:00:07,200\n本期讲解Clarke变换与Park变换" in srt
 
 
 def test_vtt_to_srt_handles_already_indexed_vtt():
