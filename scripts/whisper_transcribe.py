@@ -1,6 +1,7 @@
 """Whisper ASR transcription module supporting faster-whisper and openai-whisper."""
 
 import math
+import os
 from typing import Any, Iterable, List, Optional
 
 
