@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Output artifacts
+output/
+downloads/
+temp/
+
+# Environment
+.env
+.venv/
+env/
+venv/
+
+# Testing & logs
+.pytest_cache/
+*.log
+docs/work/*.contract-check.tmp
+
+# AgentChat & CDP runs
+.gpt-web/
