@@ -1,0 +1,199 @@
+# SPEC: video-knowledge-extractor (视频知识提取器)
+
+## 1. 目标与背景 (Goal & Context)
+打造一个专为技术与工程学习者（尤其是嵌入式、FOC 电机控制、ROS 与 AI 领域）设计的 **视频知识提取 Skill 与工具系统**。
+输入视频链接（B站/YouTube等）或本地音视频文件，系统自动化完成：
+1. 字幕智能提取（优先抓取原生 CC/官方字幕，无字幕自动回退至 Whisper/faster-whisper 音频转录）；
+2. 领域专有名词自动纠错（针对易拼错、ASR识别不准的硬核术语，如 FOC、CubeMX、VOFA+ 等进行精准替换）；
+3. AI 结构化总结（利用 LLM 输出高质量 Markdown 笔记，提炼工具链、配置参数、核心原理与代码/步骤）；
+4. 多维产物输出与导出（原字幕、校正字幕、知识笔记、术语统计表）；
+5. 交付形态：双重入口 —— 既是标准的 AI Agent Skill（`SKILL.md`，可供 Gemini/Claude/Codex 直接调用），也是独立的 Web UI (Streamlit) 与命令行工具 (CLI)。
+
+项目远程仓库：`https://github.com/Iwillbecomestrong/videototext/`
+
+---
+
+## 2. 非目标 (Non-Goals)
+- **M1 MVP 阶段不包含**：
+  - 基于 ChromaDB / FAISS 的持久化向量库与端内 RAG 视频切片问答（留待 M2）。
+  - 视频高分辨率关键帧截屏自动图文混排（留待 M2）。
+  - 多用户账号体系、付费墙与云端 SaaS 部署管理。
+  - 自建/微调 ASR 模型（直接利用现有的 faster-whisper/whisper 或外部 API）。
+
+---
+
+## 3. 核心管线与架构 (Pipeline & Architecture)
+
+```
+                 用户输入 (URL 或 本地音视频文件)
+                               |
+            ┌──────────────────┴──────────────────┐
+            ▼                                     ▼
+        【URL 输入】                           【文件输入】
+      (yt-dlp 探测/抓取)                      (ffmpeg 提取音频)
+            │                                     │
+            ├───────────────┐                     │
+            ▼               ▼                     │
+     [存在官方字幕]    [无官方字幕]               │
+            │               │                     │
+      下载 SRT/VTT    下载音频 (.m4a/.mp3)        │
+            │               └──────────┬──────────┘
+            │                          ▼
+            │               【Whisper / faster-whisper】
+            │                 (本地 ASR 转录为 SRT)
+            │                          │
+            └───────────────┬──────────┘
+                            ▼
+                    【原始字幕生成】
+                      (xxx.srt)
+                            │
+                            ▼
+                 【专业术语纠正 Cleaner】
+          (加载 config/glossary.json 领域词库)
+                            │
+                            ▼
+                   【校正字幕生成】
+                  (xxx_corrected.srt)
+                            │
+                            ▼
+                 【AI 知识笔记生成 Generator】
+            (基于 templates/note_template.md + LLM)
+                            │
+                            ▼
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+       【知识笔记 Markdown】         【术语匹配表 JSON】
+        (xxx_notes.md)             (xxx_terms.json)
+```
+
+---
+
+## 4. 模块职责与接口规范 (Modules & Interfaces)
+
+### 4.1 目录结构
+```text
+videototext/
+├── AGENT_CORE.md               # 治理规则与协作规范
+├── README.md                   # 项目概览与快速启动指南
+├── SKILL.md                    # 标准 AI Agent Skill 入口定义
+├── requirements.txt            # 项目依赖
+├── pyproject.toml              # 项目打包与工具配置
+├── config/
+│   └── glossary.json           # 默认专业词库（包含 motor-control 与通用术语）
+├── templates/
+│   └── note_template.md        # AI 整理笔记的 Markdown 模板
+├── scripts/
+│   ├── __init__.py
+│   ├── download_video.py       # yt-dlp 音频/视频下载与元数据获取
+│   ├── extract_subtitle.py     # 原生字幕抓取与 VTT 转 SRT 解析
+│   ├── whisper_transcribe.py   # faster-whisper / whisper ASR 转录模块
+│   ├── subtitle_cleaner.py     # 词库加载、正则校正、SRT时间轴保持
+│   ├── markdown_generator.py   # LLM 客户端包装与结构化笔记生成
+│   └── pipeline.py             # 总体编排引擎 (CLI & Library 入口)
+├── ui/
+│   ├── __init__.py
+│   └── app.py                  # Streamlit Web 应用
+├── tests/
+│   ├── __init__.py
+│   ├── test_subtitle_cleaner.py
+│   ├── test_extract_subtitle.py
+│   ├── test_markdown_generator.py
+│   └── test_pipeline.py
+└── docs/
+    ├── specs/video-knowledge-extractor.md
+    └── work/
+```
+
+### 4.2 核心模块接口定义
+
+#### 1) `subtitle_cleaner.py`
+- `class SubtitleCleaner`:
+  - `load_glossary(glossary_path: str | dict) -> dict[str, str]`
+  - `clean_text(text: str) -> tuple[str, list[dict]]`（返回纠正后文本与命中术语统计）
+  - `clean_srt(srt_content: str) -> tuple[str, list[dict]]`（保持 SRT 序号与时间戳不变，仅修正正文）
+
+#### 2) `extract_subtitle.py`
+- `fetch_online_subtitles(url: str, langs: list[str] = ['zh-Hans', 'zh-CN', 'zh', 'en']) -> SubtitleResult`
+  - 若检测到匹配语言的官方/自动生成字幕，直接拉取并解析为标准 SRT 字符串。
+  - 若无可用字幕，返回 `has_subtitles=False` 并附带视频标题、时长等元数据。
+
+#### 3) `download_video.py`
+- `download_audio(url: str, output_dir: str) -> str`
+  - 使用 `yt-dlp` 下载最佳音质音频流并转换为 wav/m4a，供后续转录使用。
+
+#### 4) `whisper_transcribe.py`
+- `transcribe_audio(audio_path: str, model_size: str = "base", device: str = "auto") -> str`
+  - 优先调用 `faster_whisper.WhisperModel`，若未安装或环境不满足则兼容 `openai-whisper` 或降级为清晰错误提示。
+  - 输出规范的 SRT 格式内容。
+
+#### 5) `markdown_generator.py`
+- `class MarkdownGenerator`:
+  - `generate_notes(subtitle_text: str, title: str, domain: str = "motor-control", api_key: str = None, base_url: str = None, model: str = None) -> str`
+  - 读取 `templates/note_template.md`，组装 prompt 调用 OpenAI 兼容接口。
+  - 支持 Dry-Run / Mock 模式（离线无 key 情况下也能基于规则提炼出规范 markdown，确保测试与低成本可用）。
+
+#### 6) `pipeline.py`
+- `class KnowledgeExtractionPipeline`:
+  - `process(input_source: str, is_url: bool, domain: str = "motor-control", output_dir: str = "./output") -> PipelineResult`
+  - 返回所有生成文件的路径（原字幕、校正字幕、笔记、术语表）。
+
+---
+
+## 5. 专业词库规范 (`config/glossary.json`)
+采用字典映射结构，支持大小写不敏感匹配与全词/短语匹配：
+```json
+{
+  "motor-control": {
+    "foo c": "FOC",
+    "foc": "FOC",
+    "cooper mix": "CubeMX",
+    "cubemx": "CubeMX",
+    "无法加": "VOFA+",
+    "vofa": "VOFA+",
+    "q uvision": "Keil uVision",
+    "j link": "J-Link",
+    "jlink": "J-Link",
+    "clark变换": "Clarke变换",
+    "克拉克变换": "Clarke变换",
+    "park变换": "Park变换",
+    "帕克变换": "Park变换",
+    "反park": "反Park",
+    "sv pwm": "SVPWM",
+    "svpwm": "SVPWM",
+    "马鞍波": "马鞍波",
+    "p i": "PI",
+    "pi调节器": "PI调节器",
+    "g p i o": "GPIO",
+    "gpio": "GPIO",
+    "hal库": "HAL库"
+  },
+  "general-tech": {
+    "chat gpt": "ChatGPT",
+    "deep seek": "DeepSeek"
+  }
+}
+```
+
+---
+
+## 6. 约束与异常处理 (Constraints & Edge Cases)
+1. **无官方字幕**：自动且无缝回退到音频提取 + Whisper 转写流程。
+2. **本地未装 Whisper / yt-dlp**：抛出清晰可操作的依赖指导提示，并允许通过 Mock/测试用例脱敏运行。
+3. **网络与 API 故障**：
+   - yt-dlp 被限速或断网：捕获异常，给出具体重试建议。
+   - LLM 请求超时或鉴权失败：保留已生成的原字幕与校正字幕，生成备用离线摘要笔记，避免任务全盘丢失。
+4. **特殊时间轴格式**：兼容 WebVTT 毫秒（`.`）与 SubRip 毫秒（`,`）以及多种编码（UTF-8, UTF-8-BOM, GBK）。
+
+---
+
+## 7. 验收标准与测试计划 (Acceptance Criteria & TDD Plan)
+- **自动化测试**：
+  1. `test_subtitle_cleaner.py`：测试词库替换（单词、短语、跨行、时间戳保护）。
+  2. `test_extract_subtitle.py`：测试 VTT -> SRT 格式规范化与时间轴转换。
+  3. `test_markdown_generator.py`：测试笔记模板填充与 Mock LLM 返回结构。
+  4. `test_pipeline.py`：端到端管线集成测试（模拟输入 -> 验证 4 个目标文件正确产生）。
+- **人工/界面验收**：
+  - Streamlit Web 界面可正常启动 (`streamlit run ui/app.py`)。
+  - 在页面输入视频 URL 或上传音视频，可直观查看原字幕、校正对比与 Markdown 笔记，并能点击一键下载。
+  - `SKILL.md` 可被 AI Agent 框架无缝作为 Skill 识别与调用。
+  - 代码规范完整上传至 GitHub 仓库 `Iwillbecomestrong/videototext`。
