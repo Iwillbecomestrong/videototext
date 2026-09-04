@@ -66,16 +66,16 @@ class SubtitleCleaner:
             # If term contains space, allow flexible whitespace
             escaped_term = escaped_term.replace(r"\ ", r"\s+")
 
-            # Check if term starts/ends with ASCII word characters for \b boundaries
-            has_word_start = bool(re.match(r"^\w", term, re.ASCII))
-            has_word_end = bool(re.search(r"\w$", term, re.ASCII))
+            # Use lookaround boundaries for ASCII tokens so they correctly match when adjacent to Chinese
+            has_word_start = bool(re.match(r"^[a-zA-Z0-9_]", term))
+            has_word_end = bool(re.search(r"[a-zA-Z0-9_]$", term))
 
             pattern_str = ""
             if has_word_start:
-                pattern_str += r"\b"
+                pattern_str += r"(?<![a-zA-Z0-9_])"
             pattern_str += escaped_term
             if has_word_end:
-                pattern_str += r"\b"
+                pattern_str += r"(?![a-zA-Z0-9_])"
 
             pattern = re.compile(pattern_str, re.IGNORECASE)
             patterns.append((pattern, target, term))

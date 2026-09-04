@@ -112,7 +112,16 @@ class KnowledgeExtractionPipeline:
                 if progress_callback:
                     progress_callback("正在使用 Whisper 进行语音转写...", 0.5)
 
-                raw_srt = transcribe_audio(audio_path)
+                domain_prompts = {
+                    "motor-control": (
+                        "这是一段关于电机控制与控制理论的视频教程，涉及传递函数、低通滤波器、"
+                        "截止频率omega_c、正弦信号、幅值、相位、比例积分微分PID、"
+                        "S域到Z域离散化、差分方程、采样周期Ts、STM32单片机FOC实现。"
+                    ),
+                    "general-tech": "这是一段技术开发教程，包含编程、算法、系统架构与工程实战讲解。",
+                }
+                whisper_prompt = domain_prompts.get(target_domain, None)
+                raw_srt = transcribe_audio(audio_path, initial_prompt=whisper_prompt)
             except Exception as e:
                 # If in mock mode (e.g. user entered a dummy test URL like BV123456 or offline demo),
                 # provide rich simulated sample subtitles instead of crashing.
