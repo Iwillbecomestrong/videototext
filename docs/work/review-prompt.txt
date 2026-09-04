@@ -1,0 +1,3316 @@
+﻿SPEC-LOOP WEB REVIEW HANDOFF
+Generated: 2026-09-04T02:48:56.0027552Z
+Project: I:\桌面\视频字幕
+
+## Review instruction
+
+Review the implementation against the confirmed SPEC and the exact change evidence below.
+Check SPEC compliance, plan consistency, local README contracts, regressions, edge cases, test adequacy, documentation sync, and scope creep.
+Return findings with severity, file/location, evidence, and a concrete fix recommendation. Distinguish blockers from minors.
+The response will be captured verbatim to docs/work/review-<target>.md.
+
+REVIEW OUTPUT CONTRACT
+The response MUST begin with these four attestation lines (and nothing before them), using only YES or NO:
+REPOSITORY_VERIFIED: YES/NO
+BASE_COMMIT_VERIFIED: YES/NO
+TARGET_COMMIT_VERIFIED: YES/NO
+SPEC_VERIFIED: YES/NO
+
+Then provide the exact markdown section header:
+## Findings
+
+For each finding, you MUST include a bullet item for each of these 6 fields, starting with a hyphen and space `- `:
+- Severity: BLOCKER | MAJOR | MINOR | INFO
+- File: <path>
+- Location: <lines or functions>
+- Evidence: <what the code shows>
+- Reason: <why this is a defect or improvement>
+- Recommended Fix: <concrete code or action>
+
+If no findings exist, output exactly:
+NO_FINDINGS: YES
+under the `## Findings` header.
+
+## Repository mode
+
+{"project_path":"I:\\桌面\\视频字幕","mode":"github-remote-candidate","origin":"git@github.com:Iwillbecomestrong/videototext.git","github_connector_required":true,"note":"github-remote-candidate still requires an accessible committed snapshot and GitHub Connector; otherwise use gpt-web text handoff."}
+
+## User request
+
+视频知识提取 Skill
+
+## Confirmed SPEC
+
+~~~text
+# SPEC: video-knowledge-extractor (视频知识提取器)
+
+## 1. 目标与背景 (Goal & Context)
+打造一个专为技术与工程学习者（尤其是嵌入式、FOC 电机控制、ROS 与 AI 领域）设计的 **视频知识提取 Skill 与工具系统**。
+输入视频链接（B站/YouTube等）或本地音视频文件，系统自动化完成：
+1. 字幕智能提取（优先抓取原生 CC/官方字幕，无字幕自动回退至 Whisper/faster-whisper 音频转录）；
+2. 领域专有名词自动纠错（针对易拼错、ASR识别不准的硬核术语，如 FOC、CubeMX、VOFA+ 等进行精准替换）；
+3. AI 结构化总结（利用 LLM 输出高质量 Markdown 笔记，提炼工具链、配置参数、核心原理与代码/步骤）；
+4. 多维产物输出与导出（原字幕、校正字幕、知识笔记、术语统计表）；
+5. 交付形态：双重入口 —— 既是标准的 AI Agent Skill（`SKILL.md`，可供 Gemini/Claude/Codex 直接调用），也是独立的 Web UI (Streamlit) 与命令行工具 (CLI)。
+
+项目远程仓库：`https://github.com/Iwillbecomestrong/videototext/`
+
+---
+
+## 2. 非目标 (Non-Goals)
+- **M1 MVP 阶段不包含**：
+  - 基于 ChromaDB / FAISS 的持久化向量库与端内 RAG 视频切片问答（留待 M2）。
+  - 视频高分辨率关键帧截屏自动图文混排（留待 M2）。
+  - 多用户账号体系、付费墙与云端 SaaS 部署管理。
+  - 自建/微调 ASR 模型（直接利用现有的 faster-whisper/whisper 或外部 API）。
+
+---
+
+## 3. 核心管线与架构 (Pipeline & Architecture)
+
+```
+                 用户输入 (URL 或 本地音视频文件)
+                               |
+            ┌──────────────────┴──────────────────┐
+            ▼                                     ▼
+        【URL 输入】                           【文件输入】
+      (yt-dlp 探测/抓取)                      (ffmpeg 提取音频)
+            │                                     │
+            ├───────────────┐                     │
+            ▼               ▼                     │
+     [存在官方字幕]    [无官方字幕]               │
+            │               │                     │
+      下载 SRT/VTT    下载音频 (.m4a/.mp3)        │
+            │               └──────────┬──────────┘
+            │                          ▼
+            │               【Whisper / faster-whisper】
+            │                 (本地 ASR 转录为 SRT)
+            │                          │
+            └───────────────┬──────────┘
+                            ▼
+                    【原始字幕生成】
+                      (xxx.srt)
+                            │
+                            ▼
+                 【专业术语纠正 Cleaner】
+          (加载 config/glossary.json 领域词库)
+                            │
+                            ▼
+                   【校正字幕生成】
+                  (xxx_corrected.srt)
+                            │
+                            ▼
+                 【AI 知识笔记生成 Generator】
+            (基于 templates/note_template.md + LLM)
+                            │
+                            ▼
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+       【知识笔记 Markdown】         【术语匹配表 JSON】
+        (xxx_notes.md)             (xxx_terms.json)
+```
+
+---
+
+## 4. 模块职责与接口规范 (Modules & Interfaces)
+
+### 4.1 目录结构
+```text
+videototext/
+├── AGENT_CORE.md               # 治理规则与协作规范
+├── README.md                   # 项目概览与快速启动指南
+├── SKILL.md                    # 标准 AI Agent Skill 入口定义
+├── requirements.txt            # 项目依赖
+├── pyproject.toml              # 项目打包与工具配置
+├── config/
+│   └── glossary.json           # 默认专业词库（包含 motor-control 与通用术语）
+├── templates/
+│   └── note_template.md        # AI 整理笔记的 Markdown 模板
+├── scripts/
+│   ├── __init__.py
+│   ├── download_video.py       # yt-dlp 音频/视频下载与元数据获取
+│   ├── extract_subtitle.py     # 原生字幕抓取与 VTT 转 SRT 解析
+│   ├── whisper_transcribe.py   # faster-whisper / whisper ASR 转录模块
+│   ├── subtitle_cleaner.py     # 词库加载、正则校正、SRT时间轴保持
+│   ├── markdown_generator.py   # LLM 客户端包装与结构化笔记生成
+│   └── pipeline.py             # 总体编排引擎 (CLI & Library 入口)
+├── ui/
+│   ├── __init__.py
+│   └── app.py                  # Streamlit Web 应用
+├── tests/
+│   ├── __init__.py
+│   ├── test_subtitle_cleaner.py
+│   ├── test_extract_subtitle.py
+│   ├── test_markdown_generator.py
+│   └── test_pipeline.py
+└── docs/
+    ├── specs/video-knowledge-extractor.md
+    └── work/
+```
+
+### 4.2 核心模块接口定义
+
+#### 1) `subtitle_cleaner.py`
+- `class SubtitleCleaner`:
+  - `load_glossary(glossary_path: str | dict) -> dict[str, str]`
+  - `clean_text(text: str) -> tuple[str, list[dict]]`（返回纠正后文本与命中术语统计）
+  - `clean_srt(srt_content: str) -> tuple[str, list[dict]]`（保持 SRT 序号与时间戳不变，仅修正正文）
+
+#### 2) `extract_subtitle.py`
+- `fetch_online_subtitles(url: str, langs: list[str] = ['zh-Hans', 'zh-CN', 'zh', 'en']) -> SubtitleResult`
+  - 若检测到匹配语言的官方/自动生成字幕，直接拉取并解析为标准 SRT 字符串。
+  - 若无可用字幕，返回 `has_subtitles=False` 并附带视频标题、时长等元数据。
+
+#### 3) `download_video.py`
+- `download_audio(url: str, output_dir: str) -> str`
+  - 使用 `yt-dlp` 下载最佳音质音频流并转换为 wav/m4a，供后续转录使用。
+
+#### 4) `whisper_transcribe.py`
+- `transcribe_audio(audio_path: str, model_size: str = "base", device: str = "auto") -> str`
+  - 优先调用 `faster_whisper.WhisperModel`，若未安装或环境不满足则兼容 `openai-whisper` 或降级为清晰错误提示。
+  - 输出规范的 SRT 格式内容。
+
+#### 5) `markdown_generator.py`
+- `class MarkdownGenerator`:
+  - `generate_notes(subtitle_text: str, title: str, domain: str = "motor-control", api_key: str = None, base_url: str = None, model: str = None) -> str`
+  - 读取 `templates/note_template.md`，组装 prompt 调用 OpenAI 兼容接口。
+  - 支持 Dry-Run / Mock 模式（离线无 key 情况下也能基于规则提炼出规范 markdown，确保测试与低成本可用）。
+
+#### 6) `pipeline.py`
+- `class KnowledgeExtractionPipeline`:
+  - `process(input_source: str, is_url: bool, domain: str = "motor-control", output_dir: str = "./output") -> PipelineResult`
+  - 返回所有生成文件的路径（原字幕、校正字幕、笔记、术语表）。
+
+---
+
+## 5. 专业词库规范 (`config/glossary.json`)
+采用字典映射结构，支持大小写不敏感匹配与全词/短语匹配：
+```json
+{
+  "motor-control": {
+    "foo c": "FOC",
+    "foc": "FOC",
+    "cooper mix": "CubeMX",
+    "cubemx": "CubeMX",
+    "无法加": "VOFA+",
+    "vofa": "VOFA+",
+    "q uvision": "Keil uVision",
+    "j link": "J-Link",
+    "jlink": "J-Link",
+    "clark变换": "Clarke变换",
+    "克拉克变换": "Clarke变换",
+    "park变换": "Park变换",
+    "帕克变换": "Park变换",
+    "反park": "反Park",
+    "sv pwm": "SVPWM",
+    "svpwm": "SVPWM",
+    "马鞍波": "马鞍波",
+    "p i": "PI",
+    "pi调节器": "PI调节器",
+    "g p i o": "GPIO",
+    "gpio": "GPIO",
+    "hal库": "HAL库"
+  },
+  "general-tech": {
+    "chat gpt": "ChatGPT",
+    "deep seek": "DeepSeek"
+  }
+}
+```
+
+---
+
+## 6. 约束与异常处理 (Constraints & Edge Cases)
+1. **无官方字幕**：自动且无缝回退到音频提取 + Whisper 转写流程。
+2. **本地未装 Whisper / yt-dlp**：抛出清晰可操作的依赖指导提示，并允许通过 Mock/测试用例脱敏运行。
+3. **网络与 API 故障**：
+   - yt-dlp 被限速或断网：捕获异常，给出具体重试建议。
+   - LLM 请求超时或鉴权失败：保留已生成的原字幕与校正字幕，生成备用离线摘要笔记，避免任务全盘丢失。
+4. **特殊时间轴格式**：兼容 WebVTT 毫秒（`.`）与 SubRip 毫秒（`,`）以及多种编码（UTF-8, UTF-8-BOM, GBK）。
+
+---
+
+## 7. 验收标准与测试计划 (Acceptance Criteria & TDD Plan)
+- **自动化测试**：
+  1. `test_subtitle_cleaner.py`：测试词库替换（单词、短语、跨行、时间戳保护）。
+  2. `test_extract_subtitle.py`：测试 VTT -> SRT 格式规范化与时间轴转换。
+  3. `test_markdown_generator.py`：测试笔记模板填充与 Mock LLM 返回结构。
+  4. `test_pipeline.py`：端到端管线集成测试（模拟输入 -> 验证 4 个目标文件正确产生）。
+- **人工/界面验收**：
+  - Streamlit Web 界面可正常启动 (`streamlit run ui/app.py`)。
+  - 在页面输入视频 URL 或上传音视频，可直观查看原字幕、校正对比与 Markdown 笔记，并能点击一键下载。
+  - `SKILL.md` 可被 AI Agent 框架无缝作为 Skill 识别与调用。
+  - 代码规范完整上传至 GitHub 仓库 `Iwillbecomestrong/videototext`。
+
+~~~
+
+## Review scope
+
+REVIEW_SCOPE: COMPLETE
+ALL_CHANGED_FILES:
+.gitignore
+PLAN.md
+README.md
+SKILL.md
+config/README.md
+config/glossary.json
+docs/plans/video-knowledge-extractor.md
+docs/work/plan-raw.md
+pyproject.toml
+requirements.txt
+scripts/README.md
+scripts/__init__.py
+scripts/download_video.py
+scripts/extract_subtitle.py
+scripts/markdown_generator.py
+scripts/pipeline.py
+scripts/subtitle_cleaner.py
+scripts/whisper_transcribe.py
+templates/README.md
+templates/note_template.md
+tests/test_environment.py
+tests/test_extract_subtitle.py
+tests/test_markdown_generator.py
+tests/test_pipeline.py
+tests/test_subtitle_cleaner.py
+tests/test_whisper_transcribe.py
+ui/README.md
+ui/__init__.py
+ui/app.py
+INCLUDED_CHANGED_FILES:
+.gitignore
+PLAN.md
+README.md
+SKILL.md
+config/README.md
+config/glossary.json
+docs/plans/video-knowledge-extractor.md
+docs/work/plan-raw.md
+pyproject.toml
+requirements.txt
+scripts/README.md
+scripts/__init__.py
+scripts/download_video.py
+scripts/extract_subtitle.py
+scripts/markdown_generator.py
+scripts/pipeline.py
+scripts/subtitle_cleaner.py
+scripts/whisper_transcribe.py
+templates/README.md
+templates/note_template.md
+tests/test_environment.py
+tests/test_extract_subtitle.py
+tests/test_markdown_generator.py
+tests/test_pipeline.py
+tests/test_subtitle_cleaner.py
+tests/test_whisper_transcribe.py
+ui/README.md
+ui/__init__.py
+ui/app.py
+OMITTED_CHANGED_FILES:
+(none)
+
+## Change diff (2f77ce6..eb9175d)
+
+~~~diff
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..6e3d38c
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,22 @@
++__pycache__/
++*.py[cod]
++*$py.class
++
++# Output artifacts
++output/
++downloads/
++temp/
++
++# Environment
++.env
++.venv/
++env/
++venv/
++
++# Testing & logs
++.pytest_cache/
++*.log
++docs/work/*.contract-check.tmp
++
++# AgentChat & CDP runs
++.gpt-web/
+diff --git a/PLAN.md b/PLAN.md
+new file mode 100644
+index 0000000..653948e
+--- /dev/null
++++ b/PLAN.md
+@@ -0,0 +1,9 @@
++# PLAN Entry
++本项目的详细实施计划请参阅 [docs/plans/video-knowledge-extractor.md](docs/plans/video-knowledge-extractor.md)。
++包含 6 个垂直 TDD 任务：
++1. 项目基础骨架与领域配置
++2. 专业术语纠正引擎 (Subtitle Cleaner)
++3. 在线字幕抓取与 VTT/SRT 解析
++4. 音频下载与 Whisper ASR 转录
++5. AI 结构化知识笔记生成器
++6. 总控管线、Web UI 与 Skill 定义
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..933d7e6
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,128 @@
++# Video Knowledge Extractor (视频知识提取器)
++
++> ⚡ **专为工程与技术学习者打造的视频知识提取 Skill 与工具系统**  
++> 支持 B站 / YouTube 等视频链接或本地音视频文件 ➜ 智能抓取/转录字幕 ➜ 领域专业术语纠错 (FOC/STM32/ROS/AI) ➜ 沉淀结构化工程学习笔记。
++
++---
++
++## 🌟 核心特性
++
++- 🌐 **双输入模式**：
++  - **URL 链接**：支持 B站、YouTube 等常见平台，通过 `yt-dlp` 智能探测官方字幕。
++  - **本地文件**：支持 MP4、MKV、WAV、MP3 等多格式，无字幕自动使用 `Whisper` / `faster-whisper` 转录。
++- 🎯 **领域专有名词纠错 (Glossary Engine)**：
++  - 内置针对电机控制（FOC、CubeMX、VOFA+、Keil、Clarke/Park变换、SVPWM）与通用 AI/开发的技术词库。
++  - 严格保持 SRT 序号与毫秒级时间轴不变，消除 ASR 常见谐音错词。
++- 📚 **结构化工程笔记生成**：
++  - 基于提示词模板，提炼核心概览、工具链依赖、配置参数、算法原理、代码流程与避坑指南。
++  - 支持 OpenAI 兼容接口（DeepSeek、Qwen、OpenAI 等），亦支持无 API Key 离线规则降级生成。
++- 🖥️ **现代化交互 Web UI**：
++  - 内置 Streamlit 仪表盘，支持实时进度反馈、原始/校正字幕对比预览、笔记 Markdown 渲染、以及全部产物一键打包 ZIP 下载。
++- 🧩 **标准 AI Agent Skill**：
++  - 遵循 AI Agent Skill 规范，包含 `SKILL.md`，可无缝挂载至 Gemini、Claude、Codex 等 AI 智能体体系作为内置能力。
++
++---
++
++## 🏗️ 架构与数据流
++
++```text
++                 用户输入 (URL 或 本地音视频文件)
++                               |
++            ┌──────────────────┴──────────────────┐
++            ▼                                     ▼
++        【URL 输入】                           【文件输入】
++      (yt-dlp 探测/抓取)                      (ffmpeg 提取音频)
++            │                                     │
++            ├───────────────┐                     │
++            ▼               ▼                     │
++     [存在官方字幕]    [无官方字幕]               │
++            │               │                     │
++      下载 SRT/VTT    下载音频 (.m4a/.mp3)        │
++            │               └──────────┬──────────┘
++            │                          ▼
++            │               【Whisper / faster-whisper】
++            │                 (本地 ASR 转录为 SRT)
++            │                          │
++            └───────────────┬──────────┘
++                            ▼
++                    【原始字幕生成】
++                      (xxx.srt)
++                            │
++                            ▼
++                 【专业术语纠正 Cleaner】
++          (加载 config/glossary.json 领域词库)
++                            │
++                            ▼
++                   【校正字幕生成】
++                  (xxx_corrected.srt)
++                            │
++                            ▼
++                 【AI 知识笔记生成 Generator】
++            (基于 templates/note_template.md + LLM)
++                            │
++                            ▼
++              ┌─────────────┴─────────────┐
++              ▼                           ▼
++       【知识笔记 Markdown】         【术语匹配表 JSON】
++        (xxx_notes.md)             (xxx_terms.json)
++```
++
++---
++
++## 🚀 快速启动
++
++### 1. 安装依赖
++确保已安装 Python 3.10+ 及 ffmpeg。
++```bash
++pip install -r requirements.txt
++```
++
++### 2. 启动 Web UI
++```bash
++streamlit run ui/app.py
++```
++浏览器打开 `http://localhost:8501` 即可体验图形化提取工作台。
++
++### 3. 命令行调用 (CLI)
++```bash
++# 提取指定视频链接（使用电机控制领域词库）
++python -m scripts.pipeline "https://www.bilibili.com/video/BV123456" --domain motor-control
++
++# 处理本地录播视频文件
++python -m scripts.pipeline "FOC实战课程.mp4" --domain motor-control
++```
++
++---
++
++## 📁 产物目录规范
++
++每次提取后，所有资产将按视频标题归档于 `./output/`：
++```text
++output/
++└── STM32G431_FOC入门/
++    ├── STM32G431_FOC入门_raw.srt         # 原始字幕
++    ├── STM32G431_FOC入门_corrected.srt   # 术语纠错版字幕
++    ├── STM32G431_FOC入门_notes.md       # AI 整理工程技术笔记
++    └── STM32G431_FOC入门_terms.json      # 术语统计与替换明细
++```
++
++---
++
++## ⚙️ 领域词库与模板扩展
++
++- **扩展词库**：直接编辑 [config/glossary.json](config/glossary.json)，在对应分类下添加 `"识别误词": "标准术语"` 映射。
++- **自定义笔记结构**：编辑 [templates/note_template.md](templates/note_template.md) 调整提炼小结的章节与版式。
++
++---
++
++## 🧪 自动化测试
++
++项目严格遵循 TDD（测试驱动开发）原则编写：
++```bash
++python -m pytest -v
++```
++
++---
++
++## 📄 开源协议
++MIT License
+diff --git a/SKILL.md b/SKILL.md
+new file mode 100644
+index 0000000..00df539
+--- /dev/null
++++ b/SKILL.md
+@@ -0,0 +1,80 @@
++---
++name: video-knowledge-extractor
++description: 输入视频链接或本地音视频文件，自动提取字幕、进行技术领域专业词纠正，并生成结构化工程学习笔记与标准字幕文件。
++---
++
++# Video Knowledge Extractor Skill
++
++## 1. 适用场景
++当用户需要：
++- 从 Bilibili、YouTube 或其他网站视频链接提取字幕并整理成学习笔记；
++- 处理本地音视频课程文件（mp4, mkv, wav, mp3 等），生成带时间戳的字幕与技术总结；
++- 针对电机控制 (FOC/SVPWM)、STM32/嵌入式、ROS 或 AI 领域视频，纠正常见语音识别（ASR）错词（如 "foo c" ➜ "FOC", "cooper mix" ➜ "CubeMX", "无法加" ➜ "VOFA+" 等）；
++- 输出高质量 Markdown 笔记（包含工具链、关键参数、原理推导、代码流程与避坑指南）。
++
++---
++
++## 2. 运行方式
++
++### 命令行调用 (CLI)
++可以直接在终端执行总控管线：
++```powershell
++python -m scripts.pipeline "<视频链接或本地文件路径>" [选项]
++```
++
++常用参数：
++- `--domain`: 领域术语库，可选 `motor-control`（默认，适用于电机与嵌入式）或 `general-tech`。
++- `--output`: 输出目录，默认为 `./output`。
++- `--api-key`: OpenAI 兼容 API 密钥（可留空，系统自动使用环境变量 `OPENAI_API_KEY` 或切换为离线规则生成）。
++- `--base-url`: OpenAI 兼容端点（如 `https://api.deepseek.com/v1`）。
++- `--model`: 模型名（如 `deepseek-chat` 或 `gpt-4o`）。
++- `--force-whisper`: 强制启用本地 Whisper 转写（即使视频自带原生字幕）。
++
++示例：
++```powershell
++# B站链接提取
++python -m scripts.pipeline "https://www.bilibili.com/video/BV123456" --domain motor-control
++
++# 本地视频课程提取
++python -m scripts.pipeline "FOC课程第一讲.mp4" --domain motor-control
++```
++
++---
++
++### Python 代码调用
++```python
++from scripts.pipeline import KnowledgeExtractionPipeline
++
++pipeline = KnowledgeExtractionPipeline(output_base_dir="./output", domain="motor-control")
++result = pipeline.process(
++    input_source="https://www.bilibili.com/video/BV123456",
++    domain="motor-control"
++)
++
++print(result.title)
++print(result.raw_srt_path)
++print(result.corrected_srt_path)
++print(result.notes_md_path)
++print(result.terms_json_path)
++```
++
++---
++
++### 启动交互式 Web UI
++```powershell
++streamlit run ui/app.py
++```
++启动后可在浏览器中使用直观的图形化工作台，支持 URL 提取、文件拖拽上传、领域选择、实时进度跟踪、产物对比预览与一键 ZIP 打包下载。
++
++---
++
++## 3. 产物交付规范
++对于每一个处理的视频，系统将在输出目录下创建独立文件夹：
++```text
++output/
++└── [视频标题]/
++    ├── [视频标题]_raw.srt         # 原始提取字幕 (保持原始识别文字)
++    ├── [视频标题]_corrected.srt   # 术语纠错版字幕 (时间戳严密对齐，术语纠正)
++    ├── [视频标题]_notes.md       # AI 整理工程技术学习笔记
++    └── [视频标题]_terms.json      # 术语命中与替换统计
++```
+diff --git a/config/README.md b/config/README.md
+new file mode 100644
+index 0000000..5919422
+--- /dev/null
++++ b/config/README.md
+@@ -0,0 +1,3 @@
++# Config 目录职责
++存放领域术语字典与系统配置。
++- `glossary.json`: 领域术语替换映射表，包含 `motor-control` 与 `general-tech`。
+diff --git a/config/glossary.json b/config/glossary.json
+new file mode 100644
+index 0000000..ce89688
+--- /dev/null
++++ b/config/glossary.json
+@@ -0,0 +1,51 @@
++{
++  "motor-control": {
++    "foo c": "FOC",
++    "foc": "FOC",
++    "cooper mix": "CubeMX",
++    "cubemix": "CubeMX",
++    "cubemx": "CubeMX",
++    "无法加": "VOFA+",
++    "vofa": "VOFA+",
++    "q uvision": "Keil uVision",
++    "keil uvision": "Keil uVision",
++    "j link": "J-Link",
++    "jlink": "J-Link",
++    "clark变换": "Clarke变换",
++    "clarke变换": "Clarke变换",
++    "克拉克变换": "Clarke变换",
++    "park变换": "Park变换",
++    "帕克变换": "Park变换",
++    "反park": "反Park",
++    "sv pwm": "SVPWM",
++    "svpwm": "SVPWM",
++    "马鞍波": "马鞍波",
++    "p i": "PI",
++    "pi调节器": "PI调节器",
++    "g p i o": "GPIO",
++    "gpio": "GPIO",
++    "hal库": "HAL库",
++    "stm 32": "STM32",
++    "stm32": "STM32",
++    "stm32g431": "STM32G431",
++    "pid": "PID",
++    "pwm": "PWM",
++    "adc": "ADC",
++    "dma": "DMA",
++    "tim": "TIM",
++    "usart": "USART",
++    "can总线": "CAN总线",
++    "mos管": "MOS管"
++  },
++  "general-tech": {
++    "chat gpt": "ChatGPT",
++    "chatgpt": "ChatGPT",
++    "deep seek": "DeepSeek",
++    "deepseek": "DeepSeek",
++    "vs code": "VS Code",
++    "vscode": "VS Code",
++    "github": "GitHub",
++    "git": "Git",
++    "markdown": "Markdown"
++  }
++}
+diff --git a/docs/plans/video-knowledge-extractor.md b/docs/plans/video-knowledge-extractor.md
+new file mode 100644
+index 0000000..d8e3db5
+--- /dev/null
++++ b/docs/plans/video-knowledge-extractor.md
+@@ -0,0 +1,71 @@
++# PLAN: 视频知识提取器 (video-knowledge-extractor) 实现计划
++
++本计划由 Web GPT Plan (`docs/work/plan-raw.md`) 与正式 SPEC 严格对齐整合而成，拆分为 6 个垂直 TDD 任务。
++
++---
++
++## 任务拆分与执行路线 (Vertical TDD Tasks)
++
++### Task 1: 项目基础骨架与领域配置 (Foundation & Config)
++- **目标**：建立项目依赖清单、词库与笔记模板、环境自检测试。
++- **文件**：
++  - `requirements.txt`
++  - `pyproject.toml`
++  - `config/glossary.json` (内置 motor-control 与 general-tech 词库)
++  - `templates/note_template.md` (工程技术学习笔记模板)
++  - `tests/test_environment.py` (词库加载、模板校验)
++- **TDD 验收**：测试词库结构有效性与模板完整性通过。
++
++### Task 2: 专业术语纠正引擎 (Subtitle Cleaner)
++- **目标**：高精度 SRT 词库替换，保护时间戳与序号，支持短语优先与大小写不敏感匹配，输出纠错统计。
++- **文件**：
++  - `scripts/subtitle_cleaner.py`
++  - `tests/test_subtitle_cleaner.py`
++- **TDD 验收**：
++  - RED: 编写包含 FOC/CubeMX/VOFA+/时间戳混淆的多行测试用例。
++  - GREEN: 实现词库规范化、短语/单词正则匹配与 SRT 块重构。
++  - REFACTOR: 优化正则执行效率并保证统计数据准确。
++
++### Task 3: 在线字幕抓取与 VTT/SRT 解析 (Subtitle Extraction)
++- **目标**：基于 `yt-dlp` 探测并提取视频原生字幕，支持 VTT -> SRT 格式归一化、毫秒小数点转换、缺失序号修复。
++- **文件**：
++  - `scripts/extract_subtitle.py`
++  - `tests/test_extract_subtitle.py`
++- **TDD 验收**：
++  - RED: 针对 VTT 文本、无序号 SRT、不同编码字幕编写解析转换断言。
++  - GREEN: 实现 `fetch_online_subtitles` 与 `vtt_to_srt` 转换器。
++  - REFACTOR: 增强防崩溃处理与空字幕降级返回。
++
++### Task 4: 音频下载与 Whisper ASR 转录 (Audio Download & Transcribe)
++- **目标**：当无原生字幕时，下载音频流并通过 faster-whisper/whisper 进行本地 ASR 转录，生成规范 SRT。
++- **文件**：
++  - `scripts/download_video.py`
++  - `scripts/whisper_transcribe.py`
++  - `tests/test_whisper_transcribe.py`
++- **TDD 验收**：
++  - RED: 针对依赖缺失、Mock ASR 返回编写测试用例。
++  - GREEN: 实现音频提取与转录流，包含清晰安装引导。
++  - REFACTOR: 保证在未安装 heavy ASR 权重时的测试桩稳定运行。
++
++### Task 5: AI 结构化知识笔记生成器 (Markdown Generator)
++- **目标**：将校正字幕结合模板组织 prompt，调用兼容 OpenAI 协议的 LLM 生成 Markdown 笔记；支持离线规则降级。
++- **文件**：
++  - `scripts/markdown_generator.py`
++  - `tests/test_markdown_generator.py`
++- **TDD 验收**：
++  - RED: 验证提示词构造、Mock LLM 响应解析、无 Key 时的离线 Mock 摘要生成。
++  - GREEN: 封装 `MarkdownGenerator` 类并支持 API Key / Base URL / Model 参数与环境变量。
++  - REFACTOR: 格式清理与容错解析。
++
++### Task 6: 总控管线、Web UI 与 Skill 定义 (Pipeline, UI & Skill)
++- **目标**：打通统一 CLI/Pipeline、构建现代交互式 Streamlit Web UI、编写标准 `SKILL.md` 与根 `README.md`。
++- **文件**：
++  - `scripts/pipeline.py`
++  - `tests/test_pipeline.py`
++  - `ui/app.py`
++  - `SKILL.md`
++  - `README.md`
++- **TDD 验收**：
++  - 端到端测试跑通：模拟输入 URL/文件 -> 产出 4 份目标文件。
++  - Streamlit 应用无语法错误且各交互组件正常加载。
++  - Git Commit、Review 审查并通过 `git push origin main` 交付。
+diff --git a/docs/work/plan-raw.md b/docs/work/plan-raw.md
+new file mode 100644
+index 0000000..99a4494
+--- /dev/null
++++ b/docs/work/plan-raw.md
+@@ -0,0 +1,728 @@
++﻿Markdown# Implementation Plan: video-knowledge-extractor
++
++## 0. Planning Summary
++
++目标：实现一个面向技术学习场景的视频知识提取 Skill 与工具系统。
++
++核心输入：
++- B站/YouTube 等视频 URL
++- 本地音视频文件
++
++核心输出：
++1. 原始字幕 `xxx.srt`
++2. 专业术语纠正字幕 `xxx_corrected.srt`
++3. AI 结构化学习笔记 `xxx_notes.md`
++4. 术语命中统计 `xxx_terms.json`
++
++交付形态：
++- AI Agent Skill (`SKILL.md`)
++- CLI 工具
++- Streamlit Web UI
++
++MVP 范围严格遵循 SPEC：
++- 包含字幕提取、ASR fallback、术语纠正、LLM 笔记生成、UI 展示。
++- 不实现：
++  - RAG
++  - 向量数据库
++  - 视频关键帧分析
++  - 多用户系统
++  - 云端部署
++
++
++---
++
++# 1. Architecture Overview
++
++最终架构：
++
++             User Input
++                 |
++    +------------+------------+
++    |                         |
++  URL Input              Local File
++    |                         |
++yt-dlp probe             ffmpeg
++    |                         |
++    +------------+------------+
++                 |
++         Subtitle Provider
++                 |
++    +------------+------------+
++    |                         |
++Official Subtitle            No Subtitle
++|                         |
++VTT/SRT Parse          Whisper ASR
++|                         |
+++------------+------------+
++|
++Raw Subtitle
++(.srt)
++|
++SubtitleCleaner
++|
+++------------+------------+
++|                         |
++Corrected Subtitle        Term Report
++|
++MarkdownGenerator
++|
++Knowledge Notes
++|
++Output Directory
++
++---
++
++# 2. Implementation Order
++
++## Phase 0: Project Foundation
++
++### Goal
++
++建立项目骨架、开发规范和基础运行环境。
++
++
++## Files
++
++Create:
++
++README.md
++AGENT_CORE.md
++AGENTS.md
++SKILL.md
++requirements.txt
++pyproject.toml
++config/glossary.json
++templates/note_template.md
++
++
++## Tasks
++
++### 1. Python package initialization
++
++配置：
++
++- Python >=3.10
++- pytest
++- streamlit
++- yt-dlp
++- faster-whisper
++- openai compatible client
++
++
++### 2. Output convention
++
++统一：
++
++output/
++└── video_name/
++├── raw.srt
++├── corrected.srt
++├── notes.md
++└── terms.json
++
++
++### Tests
++
++新增：
++
++tests/test_environment.py
++
++验证：
++
++- package import
++- config loading
++
++
++---
++
++# Phase 1: Subtitle Extraction Module
++
++## Objective
++
++实现：
++
++URL -> SubtitleResult
++
++
++## Files
++
++Create:
++
++scripts/extract_subtitle.py
++tests/test_extract_subtitle.py
++
++
++## Interface
++
++
++```python
++@dataclass
++class SubtitleResult:
++    has_subtitles: bool
++    title: str
++    duration: float
++    subtitle_text: str | None
++    language: str | None
++Function:
++Python运行fetch_online_subtitles(
++    url: str,
++    langs=[
++        "zh-Hans",
++        "zh-CN",
++        "zh",
++        "en"
++    ]
++)->SubtitleResult
++Implementation
++使用：
++
++
++yt-dlp metadata
++
++
++yt-dlp subtitle extraction
++
++
++处理：
++
++
++VTT
++
++
++SRT
++
++
++UTF-8
++
++
++UTF-8 BOM
++
++
++GBK
++
++
++转换：
++WEBVTT
++
++00:00:01.000 --> 00:00:03.000
++text
++
++↓
++
++1
++00:00:01,000 --> 00:00:03,000
++text
++Tests
++覆盖：
++
++
++VTT parsing
++
++
++timestamp conversion
++
++
++encoding handling
++
++
++missing subtitle
++
++
++
++Phase 2: Audio Download + Whisper ASR
++Objective
++无字幕视频自动转录。
++Files
++scripts/download_video.py
++scripts/whisper_transcribe.py
++
++tests/test_whisper_transcribe.py
++Interfaces
++download_video.py
++Python运行download_audio(
++    url:str,
++    output_dir:str
++)->str
++流程：
++URL
++ |
++yt-dlp
++ |
++audio stream
++ |
++wav/m4a
++异常：
++
++
++网络失败
++
++
++视频不可访问
++
++
++yt-dlp不存在
++
++
++返回：
++明确错误：
++Install yt-dlp:
++
++pip install yt-dlp
++
++whisper_transcribe.py
++接口：
++Python运行transcribe_audio(
++    audio_path:str,
++    model_size="base",
++    device="auto"
++)->str
++优先：
++faster-whisper
++Fallback:
++openai-whisper
++输出：
++标准 SRT。
++Tests
++Mock:
++
++
++Whisper result
++
++
++missing dependency
++
++
++避免 CI 下载模型。
++
++Phase 3: Subtitle Cleaner
++Objective
++解决技术领域 ASR 错词。
++Files
++scripts/subtitle_cleaner.py
++config/glossary.json
++
++tests/test_subtitle_cleaner.py
++Interface
++Python运行class SubtitleCleaner:
++
++    load_glossary()
++
++    clean_text(
++        text
++    )->(
++        cleaned,
++        terms
++    )
++
++    clean_srt(
++        srt
++    )->(
++        corrected_srt,
++        terms
++    )
++Algorithm
++顺序：
++
++
++normalize lowercase
++
++
++phrase matching
++
++
++word matching
++
++
++restore capitalization
++
++
++Example:
++Input:
++今天学习 foo c 和 cubemix
++Output:
++今天学习 FOC 和 CubeMX
++保持：
++序号
++时间戳
++换行
++不改变。
++Tests
++必须覆盖：
++
++
++单词替换
++
++
++短语替换
++
++
++大小写
++
++
++时间戳保护
++
++
++多行字幕
++
++
++
++Phase 4: Markdown Knowledge Generator
++Objective
++字幕 -> 工程学习笔记。
++Files
++scripts/markdown_generator.py
++templates/note_template.md
++
++tests/test_markdown_generator.py
++Interface
++Python运行class MarkdownGenerator:
++
++    generate_notes(
++        subtitle_text,
++        title,
++        domain="motor-control",
++        api_key=None,
++        base_url=None,
++        model=None
++    )->str
++Template
++生成：
++Markdown# Title
++
++
++## Overview
++
++
++## Key Concepts
++
++
++## Tools
++
++
++## Configuration
++
++
++## Code
++
++
++## Summary
++LLM
++支持：
++
++
++OpenAI compatible API
++
++
++输入：
++subtitle
+++
++template
++输出：
++markdown
++Offline Mode
++无 API：
++返回：
++规则摘要：
++章节分割
++关键词提取
++术语列表
++Tests
++Mock:
++
++
++LLM response
++
++
++template rendering
++
++
++missing key
++
++
++
++Phase 5: Pipeline Integration
++Objective
++打通完整流程。
++Files
++scripts/pipeline.py
++tests/test_pipeline.py
++Interface
++Python运行class KnowledgeExtractionPipeline:
++
++
++    process(
++        input_source,
++        is_url,
++        domain,
++        output_dir
++    )->PipelineResult
++PipelineResult
++Python运行@dataclass
++class PipelineResult:
++
++    raw_subtitle:str
++
++    corrected_subtitle:str
++
++    notes:str
++
++    terms:str
++Logic
++if url:
++
++    try official subtitle
++
++    if fail:
++        download audio
++        whisper
++
++
++else:
++
++    extract audio
++    whisper
++
++
++then:
++
++clean subtitle
++
++generate notes
++
++save files
++Failure Strategy
++允许：
++字幕成功
+++
++AI失败
++
++=> 保留字幕输出
++
++Phase 6: Streamlit UI
++Objective
++提供可视化入口。
++Files
++ui/app.py
++UI Layout
++Video Knowledge Extractor
++
++
++Input:
++
++[ URL ]
++
++or
++
++[ Upload File ]
++
++
++Domain:
++
++[ motor-control ]
++
++
++Start
++
++
++-----------------
++
++Raw Subtitle
++
++Corrected Subtitle
++
++Notes
++
++Terms
++
++
++Download buttons
++Functions
++支持：
++
++
++输入 URL
++
++
++上传文件
++
++
++显示进度
++
++
++查看结果
++
++
++下载产物
++
++
++启动：
++Bashstreamlit run ui/app.py
++
++Phase 7: Skill Integration
++Objective
++让 Agent 可以调用。
++File
++SKILL.md
++内容：
++定义：
++name:
++video-knowledge-extractor
++
++
++trigger:
++
++"When user provides video URL or asks for video notes"
++
++
++workflow:
++
++1 extract subtitle
++2 clean terms
++3 summarize
++4 export markdown
++兼容：
++
++
++Claude
++
++
++Gemini
++
++
++Codex
++
++
++
++3. Testing Strategy
++Unit Tests
++ModuleTestextract_subtitleVTT/SRTcleaner术语替换whispermockgeneratorLLM mockpipeline完整流程
++Integration Test
++模拟：
++input.mp4
++
++↓
++
++raw.srt
++
++↓
++
++corrected.srt
++
++↓
++
++notes.md
++
++↓
++
++terms.json
++禁止：
++测试时真实下载大模型。
++
++4. Risks
++Risk 1: Whisper速度
++问题：
++CPU转录慢。
++Mitigation:
++
++
++默认base模型
++
++
++支持cuda
++
++
++支持tiny/small配置
++
++
++
++Risk 2: B站字幕限制
++问题：
++字幕接口变化。
++Mitigation:
++封装：
++SubtitleProvider
++未来支持：
++
++
++bilibili API
++
++
++youtube API
++
++
++
++Risk 3: LLM输出不稳定
++Mitigation:
++模板约束：
++note_template.md
++并支持：
++dry-run
++
++5. Verification Commands
++Install
++Bashpip install -r requirements.txt
++Unit Test
++Bashpytest tests
++CLI
++Example:
++Bashpython -m scripts.pipeline \
++--input URL \
++--url
++UI
++Bashstreamlit run ui/app.py
++Skill Check
++Verify:
++SKILL.md exists
++
++Agent can discover skill
++
++6. Suggested Commit Sequence
++chore(repo): initialize video extractor project
++
++feat(subtitle): implement subtitle extraction
++
++feat(asr): add whisper transcription fallback
++
++feat(cleaner): add technical glossary correction
++
++feat(generator): add markdown knowledge generator
++
++feat(core): integrate extraction pipeline
++
++feat(ui): add streamlit interface
++
++feat(skill): add agent skill definition
++
++test(all): complete pipeline tests
++
++7. Assumptions
++
++
++默认 LLM 使用 OpenAI compatible API。
++
++
++B站/YouTube字幕获取依赖第三方工具，不保证永久稳定。
++
++
++UI 默认本地运行，不考虑部署。
++
++
++专业词库初期人工维护，不自动学习。
++
++
++
++8. SPEC Conflicts
++未发现必须修改的 SPEC 冲突。
++以下属于实现阶段可优化项，不改变需求：
++
++
++可将字幕 Provider 抽象为接口，方便未来扩展。
++
++
++可增加缓存机制减少重复转录。
++
++
++可增加 CLI 参数系统。
++
++
++以上不进入 M1 必做范围。
+diff --git a/pyproject.toml b/pyproject.toml
+new file mode 100644
+index 0000000..3597b25
+--- /dev/null
++++ b/pyproject.toml
+@@ -0,0 +1,22 @@
++[build-system]
++requires = ["setuptools>=61.0"]
++build-backend = "setuptools.build_meta"
++
++[project]
++name = "video-knowledge-extractor"
++version = "0.1.0"
++description = "Extract subtitles, correct domain terminology, and generate structured Markdown knowledge notes from technical videos."
++authors = [{ name = "Iwillbecomestrong" }]
++readme = "README.md"
++requires-python = ">=3.10"
++dependencies = [
++    "yt-dlp>=2024.12.23",
++    "streamlit>=1.35.0",
++    "openai>=1.30.0",
++    "requests>=2.31.0",
++]
++
++[tool.pytest.ini_options]
++testpaths = ["tests"]
++python_files = ["test_*.py"]
++python_functions = ["test_*"]
+diff --git a/requirements.txt b/requirements.txt
+new file mode 100644
+index 0000000..ff9a127
+--- /dev/null
++++ b/requirements.txt
+@@ -0,0 +1,6 @@
++yt-dlp>=2024.12.23
++streamlit>=1.35.0
++openai>=1.30.0
++pytest>=8.0.0
++requests>=2.31.0
++faster-whisper>=1.0.0
+diff --git a/scripts/README.md b/scripts/README.md
+new file mode 100644
+index 0000000..4bdebf2
+--- /dev/null
++++ b/scripts/README.md
+@@ -0,0 +1,8 @@
++# Scripts 目录职责
++存放视频下载、字幕抓取与转换、ASR 转录、术语纠正、AI 笔记生成以及总控管线核心业务模块。
++- `subtitle_cleaner.py`: 专业术语纠正与 SRT 块重写
++- `extract_subtitle.py`: 官方/在线字幕探测与 VTT->SRT 转换
++- `download_video.py`: 音频流下载与格式转换
++- `whisper_transcribe.py`: 本地 ASR 转录封装
++- `markdown_generator.py`: LLM 知识笔记组织与生成
++- `pipeline.py`: 端到端提取管线总控与 CLI 入口
+diff --git a/scripts/__init__.py b/scripts/__init__.py
+new file mode 100644
+index 0000000..12b30a9
+--- /dev/null
++++ b/scripts/__init__.py
+@@ -0,0 +1 @@
++"""video-knowledge-extractor scripts package."""
+diff --git a/scripts/download_video.py b/scripts/download_video.py
+new file mode 100644
+index 0000000..e47a599
+--- /dev/null
++++ b/scripts/download_video.py
+@@ -0,0 +1,113 @@
++"""Audio and video downloader / extractor using yt-dlp and ffmpeg."""
++
++import os
++import re
++import subprocess
++from pathlib import Path
++from typing import Optional
++
++
++def is_url(source: str) -> bool:
++    """Check if the source string is an HTTP/HTTPS URL."""
++    return bool(re.match(r"^https?://", source.strip(), re.IGNORECASE))
++
++
++def extract_audio_from_local_video(video_path: str, output_dir: str) -> str:
++    """Extract 16kHz mono audio from a local video file using ffmpeg."""
++    vpath = Path(video_path).resolve()
++    if not vpath.exists():
++        raise FileNotFoundError(f"Local video file not found: {video_path}")
++
++    out_dir = Path(output_dir).resolve()
++    out_dir.mkdir(parents=True, exist_ok=True)
++    target_wav = out_dir / f"{vpath.stem}_audio.wav"
++
++    if target_wav.exists() and target_wav.stat().st_size > 0:
++        return str(target_wav)
++
++    cmd = [
++        "ffmpeg",
++        "-y",
++        "-i",
++        str(vpath),
++        "-vn",
++        "-acodec",
++        "pcm_s16le",
++        "-ar",
++        "16000",
++        "-ac",
++        "1",
++        str(target_wav),
++    ]
++
++    try:
++        subprocess.run(
++            cmd,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            check=True,
++        )
++        return str(target_wav)
++    except FileNotFoundError:
++        raise RuntimeError(
++            "ffmpeg is not installed or not in PATH. Please install ffmpeg to process local videos."
++        )
++    except subprocess.CalledProcessError as e:
++        raise RuntimeError(f"ffmpeg failed to extract audio: {e.stderr.decode(errors='replace')}")
++
++
++def download_audio_from_url(url: str, output_dir: str) -> str:
++    """Download audio stream from URL via yt-dlp."""
++    try:
++        import yt_dlp
++    except ImportError:
++        raise RuntimeError(
++            "yt-dlp is not installed. Install with `pip install yt-dlp` to download audio."
++        )
++
++    out_dir = Path(output_dir).resolve()
++    out_dir.mkdir(parents=True, exist_ok=True)
++    output_template = str(out_dir / "%(id)s.%(ext)s")
++
++    ydl_opts = {
++        "format": "bestaudio/best",
++        "outtmpl": output_template,
++        "postprocessors": [
++            {
++                "key": "FFmpegExtractAudio",
++                "preferredcodec": "wav",
++                "preferredquality": "192",
++            }
++        ],
++        "quiet": True,
++        "no_warnings": True,
++    }
++
++    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
++        info = ydl.extract_info(url, download=True)
++        video_id = info.get("id", "audio")
++        target_wav = out_dir / f"{video_id}.wav"
++        if target_wav.exists():
++            return str(target_wav)
++        # Check any matching audio files in output dir
++        for f in out_dir.glob(f"{video_id}.*"):
++            if f.suffix in [".wav", ".mp3", ".m4a", ".aac", ".opus"]:
++                return str(f)
++        raise RuntimeError(f"Downloaded audio file could not be located in {out_dir}")
++
++
++def prepare_audio_source(source: str, output_dir: str = "./downloads") -> str:
++    """Prepare an audio file path from either a URL or local file."""
++    if is_url(source):
++        return download_audio_from_url(source, output_dir)
++
++    spath = Path(source)
++    if not spath.exists():
++        raise FileNotFoundError(f"Input file does not exist: {source}")
++
++    audio_exts = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
++    if spath.suffix.lower() in audio_exts:
++        return str(spath.resolve())
++
++    # Treat as video file and extract audio
++    return extract_audio_from_local_video(str(spath), output_dir)
+diff --git a/scripts/extract_subtitle.py b/scripts/extract_subtitle.py
+new file mode 100644
+index 0000000..fa4a79a
+--- /dev/null
++++ b/scripts/extract_subtitle.py
+@@ -0,0 +1,204 @@
++"""Extract online video subtitles and parse VTT/SRT formats."""
++
++import re
++from dataclasses import dataclass
++from typing import List, Optional
++import urllib.request
++
++
++@dataclass
++class SubtitleResult:
++    """Dataclass holding extracted subtitle details."""
++
++    has_subtitles: bool
++    title: str = ""
++    duration: float = 0.0
++    subtitle_text: Optional[str] = None
++    language: Optional[str] = None
++    source_url: str = ""
++    error: Optional[str] = None
++
++
++def format_srt_timestamp(ts: str) -> str:
++    """Format timestamp from mm:ss.xxx or hh:mm:ss.xxx to hh:mm:ss,xxx."""
++    ts = ts.strip().replace(".", ",")
++    parts = ts.split(":")
++    if len(parts) == 2:
++        # mm:ss,xxx -> 00:mm:ss,xxx
++        return f"00:{parts[0].zfill(2)}:{parts[1]}"
++    elif len(parts) == 3:
++        # hh:mm:ss,xxx -> hh(2):mm(2):ss,xxx
++        return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}:{parts[2]}"
++    return ts
++
++
++def vtt_to_srt(vtt_content: str) -> str:
++    """Convert WebVTT formatted subtitles into standard SubRip (SRT) format."""
++    if not vtt_content or not vtt_content.strip():
++        return ""
++
++    lines = vtt_content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
++    
++    timestamp_pattern = re.compile(
++        r"((?:\d{1,2}:)?\d{2}:\d{2}[\.,]\d{3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[\.,]\d{3})"
++    )
++    tag_pattern = re.compile(r"<[^>]+>|\{[^}]+\}")
++
++    blocks = []
++    current_timestamp = ""
++    current_lines: List[str] = []
++    
++    i = 0
++    total = len(lines)
++    while i < total:
++        line = lines[i].strip()
++        
++        # Skip WebVTT header and styling notes
++        if line.startswith("WEBVTT") or line.startswith("NOTE") or line.startswith("Kind:") or line.startswith("Language:"):
++            i += 1
++            continue
++            
++        ts_match = timestamp_pattern.search(line)
++        if ts_match:
++            # If we had a previous block, record it
++            if current_timestamp and current_lines:
++                text = " ".join([l for l in current_lines if l])
++                blocks.append((current_timestamp, text))
++                current_lines = []
++                
++            start_ts = format_srt_timestamp(ts_match.group(1))
++            end_ts = format_srt_timestamp(ts_match.group(2))
++            current_timestamp = f"{start_ts} --> {end_ts}"
++            i += 1
++            continue
++            
++        if current_timestamp:
++            if not line:
++                if current_lines:
++                    text = " ".join([l for l in current_lines if l])
++                    blocks.append((current_timestamp, text))
++                    current_timestamp = ""
++                    current_lines = []
++            else:
++                # Clean tags and styling from text
++                cleaned_line = tag_pattern.sub("", line).strip()
++                # Ignore isolated numeric index lines in source VTT
++                if not (cleaned_line.isdigit() and len(current_lines) == 0):
++                    if cleaned_line:
++                        current_lines.append(cleaned_line)
++        i += 1
++        
++    if current_timestamp and current_lines:
++        text = " ".join([l for l in current_lines if l])
++        blocks.append((current_timestamp, text))
++
++    # Build standard numbered SRT blocks, de-duplicating adjacent identical text
++    srt_blocks = []
++    seq = 1
++    last_text = ""
++    for ts, text in blocks:
++        if not text:
++            continue
++        if text == last_text and srt_blocks:
++            continue
++        srt_blocks.append(f"{seq}\n{ts}\n{text}")
++        last_text = text
++        seq += 1
++
++    return "\n\n".join(srt_blocks) + "\n" if srt_blocks else ""
++
++
++def fetch_online_subtitles(
++    url: str, langs: Optional[List[str]] = None
++) -> SubtitleResult:
++    """Fetch online video subtitles using yt-dlp if available."""
++    if langs is None:
++        langs = ["zh-Hans", "zh-CN", "zh", "en", "en-US"]
++
++    try:
++        import yt_dlp
++    except ImportError:
++        return SubtitleResult(
++            has_subtitles=False,
++            source_url=url,
++            error="yt-dlp is not installed. Run `pip install yt-dlp` to extract online subtitles.",
++        )
++
++    ydl_opts = {
++        "skip_download": True,
++        "quiet": True,
++        "no_warnings": True,
++    }
++
++    try:
++        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
++            info = ydl.extract_info(url, download=False)
++            if not info:
++                return SubtitleResult(
++                    has_subtitles=False,
++                    source_url=url,
++                    error="Failed to extract video info.",
++                )
++
++            title = info.get("title", "Unknown Title")
++            duration = float(info.get("duration") or 0.0)
++
++            # Look for requested language subtitles: official first, then automatic
++            subtitles = info.get("subtitles") or {}
++            auto_subs = info.get("automatic_captions") or {}
++
++            chosen_url = None
++            chosen_ext = "vtt"
++            chosen_lang = None
++
++            for lang in langs:
++                for sub_dict in [subtitles, auto_subs]:
++                    if lang in sub_dict and sub_dict[lang]:
++                        formats = sub_dict[lang]
++                        # Prefer vtt or srt
++                        vtt_fmt = next((f for f in formats if f.get("ext") == "vtt"), None)
++                        srt_fmt = next((f for f in formats if f.get("ext") == "srt"), None)
++                        selected = vtt_fmt or srt_fmt or formats[0]
++                        chosen_url = selected.get("url")
++                        chosen_ext = selected.get("ext", "vtt")
++                        chosen_lang = lang
++                        break
++                if chosen_url:
++                    break
++
++            if not chosen_url:
++                return SubtitleResult(
++                    has_subtitles=False,
++                    title=title,
++                    duration=duration,
++                    source_url=url,
++                    error="No official or auto-generated subtitle found in specified languages.",
++                )
++
++            # Fetch the subtitle content
++            req = urllib.request.Request(
++                chosen_url, headers={"User-Agent": "Mozilla/5.0"}
++            )
++            with urllib.request.urlopen(req, timeout=15) as resp:
++                content = resp.read().decode("utf-8", errors="replace")
++
++            if chosen_ext == "vtt" or "WEBVTT" in content:
++                srt_text = vtt_to_srt(content)
++            else:
++                srt_text = content
++
++            return SubtitleResult(
++                has_subtitles=True,
++                title=title,
++                duration=duration,
++                subtitle_text=srt_text,
++                language=chosen_lang,
++                source_url=url,
++            )
++
++    except Exception as e:
++        return SubtitleResult(
++            has_subtitles=False,
++            source_url=url,
++            error=f"Error extracting subtitle: {str(e)}",
++        )
+diff --git a/scripts/markdown_generator.py b/scripts/markdown_generator.py
+new file mode 100644
+index 0000000..fccbda8
+--- /dev/null
++++ b/scripts/markdown_generator.py
+@@ -0,0 +1,264 @@
++"""Generate structured Markdown knowledge notes from technical video subtitles."""
++
++import datetime
++import os
++import re
++from pathlib import Path
++from typing import Any, Dict, List, Optional
++
++
++class MarkdownGenerator:
++    """Generate structured Markdown engineering study notes."""
++
++    def __init__(self, template_path: Optional[str] = "templates/note_template.md"):
++        """Initialize with note template path."""
++        self.template_path = Path(template_path) if template_path else None
++        self.default_template = self._load_template()
++
++    def _load_template(self) -> str:
++        """Load template file content or fall back to default template."""
++        if self.template_path and self.template_path.exists():
++            return self.template_path.read_text(encoding="utf-8")
++
++        return """# {{title}}
++
++> **提取时间**：{{timestamp}}  
++> **领域分类**：{{domain}}  
++> **视频来源**：{{source}}
++
++---
++
++## 1. 核心概览 (Overview)
++{{overview}}
++
++---
++
++## 2. 工具链与环境 (Toolchain & Environment)
++{{toolchain}}
++
++---
++
++## 3. 关键配置与硬件参数 (Configurations & Parameters)
++{{configurations}}
++
++---
++
++## 4. 核心原理解析 (Key Concepts & Principles)
++{{principles}}
++
++---
++
++## 5. 开发流程与核心代码 (Workflow & Implementation)
++{{workflow}}
++
++---
++
++## 6. 避坑指南与重点提醒 (Gotchas & Highlights)
++{{highlights}}
++
++---
++
++## 7. 专业术语对照表 (Terminology Reference)
++{{terminology}}
++"""
++
++    def extract_clean_text_from_srt(self, srt_content: str) -> str:
++        """Strip SRT index and timestamp lines to return clean continuous text."""
++        if not srt_content or not srt_content.strip():
++            return ""
++
++        timestamp_pattern = re.compile(
++            r"^\d{1,2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,\.]\d{3}"
++        )
++        lines = srt_content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
++
++        text_lines = []
++        for line in lines:
++            stripped = line.strip()
++            if not stripped:
++                continue
++            if stripped.isdigit():
++                continue
++            if timestamp_pattern.search(stripped):
++                continue
++            text_lines.append(stripped)
++
++        return "\n".join(text_lines)
++
++    def generate_offline_summary(
++        self,
++        title: str,
++        subtitle_text: str,
++        domain: str = "motor-control",
++        source: str = "",
++        terms: Optional[List[Dict[str, Any]]] = None,
++    ) -> str:
++        """Generate structured markdown note offline without requiring an LLM API key."""
++        clean_text = self.extract_clean_text_from_srt(subtitle_text)
++        timestamp_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
++
++        # Extract paragraphs / bullet points from transcript
++        paragraphs = [p for p in clean_text.split("\n") if p.strip()]
++        overview_text = (
++            "本笔记由视频字幕提取引擎自动整理生成。\n\n"
++            + ("\n".join(paragraphs[:5]) if paragraphs else "暂无正文内容。")
++        )
++
++        # Detect toolchain terms
++        detected_tools = set()
++        detected_principles = set()
++        common_tools = [
++            "CubeMX",
++            "Keil",
++            "VS Code",
++            "J-Link",
++            "VOFA+",
++            "MATLAB",
++            "Simulink",
++            "Git",
++            "HAL库",
++        ]
++        common_principles = [
++            "FOC",
++            "SVPWM",
++            "Clarke变换",
++            "Park变换",
++            "反Park",
++            "PID",
++            "PWM",
++            "ADC",
++            "马鞍波",
++        ]
++
++        full_content = clean_text + " " + " ".join([t.get("replacement", "") for t in (terms or [])])
++        for tool in common_tools:
++            if tool.lower() in full_content.lower():
++                detected_tools.add(tool)
++
++        for principle in common_principles:
++            if principle.lower() in full_content.lower():
++                detected_principles.add(principle)
++
++        toolchain_md = (
++            "\n".join([f"- **{t}**：课程演示或工程配置中涉及的关键开发工具" for t in sorted(detected_tools)])
++            if detected_tools
++            else "- 本课程使用标准嵌入式开发工具链。"
++        )
++
++        principles_md = (
++            "\n".join([f"- **{p}**：核心控制算法与工程原理" for p in sorted(detected_principles)])
++            if detected_principles
++            else "- 请参考视频正文的理论讲解部分。"
++        )
++
++        configs_md = (
++            "- **主控芯片/架构**：参考工程配置\n"
++            "- **时钟与采样**：请结合具体代码与硬件原理图复核"
++        )
++
++        workflow_md = "1. 初始化开发环境与工程配置\n2. 编写核心算法驱动\n3. 在线联调与波形观测"
++        highlights_md = "- 调试电机或功率板时注意安全限流，避免短路。"
++
++        # Build terminology table
++        if terms:
++            term_rows = [
++                "| 识别原词 | 纠错后标准术语 | 出现频次 |",
++                "| :--- | :--- | :--- |",
++            ]
++            for t in sorted(terms, key=lambda x: x.get("count", 0), reverse=True):
++                term_rows.append(
++                    f"| `{t.get('original', '')}` | **{t.get('replacement', '')}** | {t.get('count', 1)} |"
++                )
++            terminology_md = "\n".join(term_rows)
++        else:
++            terminology_md = "未检测到特定纠错术语或字幕已非常标准。"
++
++        rendered = self.default_template
++        rendered = rendered.replace("{{title}}", title or "视频知识整理笔记")
++        rendered = rendered.replace("{{timestamp}}", timestamp_str)
++        rendered = rendered.replace("{{domain}}", domain)
++        rendered = rendered.replace("{{source}}", source or "本地上传/未知链接")
++        rendered = rendered.replace("{{overview}}", overview_text)
++        rendered = rendered.replace("{{toolchain}}", toolchain_md)
++        rendered = rendered.replace("{{configurations}}", configs_md)
++        rendered = rendered.replace("{{principles}}", principles_md)
++        rendered = rendered.replace("{{workflow}}", workflow_md)
++        rendered = rendered.replace("{{highlights}}", highlights_md)
++        rendered = rendered.replace("{{terminology}}", terminology_md)
++
++        return rendered
++
++    def generate_notes(
++        self,
++        subtitle_text: str,
++        title: str,
++        domain: str = "motor-control",
++        source: str = "",
++        terms: Optional[List[Dict[str, Any]]] = None,
++        api_key: Optional[str] = None,
++        base_url: Optional[str] = None,
++        model: Optional[str] = None,
++    ) -> str:
++        """Generate structured Markdown knowledge notes via LLM or rule-based fallback."""
++        key = api_key or os.environ.get("OPENAI_API_KEY")
++        if not key:
++            return self.generate_offline_summary(
++                title=title,
++                subtitle_text=subtitle_text,
++                domain=domain,
++                source=source,
++                terms=terms,
++            )
++
++        url = base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
++        target_model = model or os.environ.get("OPENAI_MODEL", "gpt-4o")
++
++        clean_transcript = self.extract_clean_text_from_srt(subtitle_text)
++        # Limit transcript length if excessively long
++        if len(clean_transcript) > 25000:
++            clean_transcript = clean_transcript[:25000] + "\n...(以下字幕已截断)..."
++
++        system_prompt = (
++            "你是一个专业的技术视频知识提炼专家（擅长嵌入式、电机控制、算法与工程开发）。\n"
++            "请根据用户提供的视频字幕和领域分类，生成一份结构极其严谨、排版精美、可直接用于复习和沉淀的工程技术学习笔记（Markdown 格式）。\n"
++            "要求：\n"
++            "1. 严格使用一级和二级标题，包含【核心概览】、【工具链与环境】、【关键配置与硬件参数】、【核心原理解析】、【开发流程与核心代码】、【避坑指南与重点提醒】、【专业术语表】。\n"
++            "2. 语言凝练专业，技术专有名词严格使用标准大小写（如 FOC, CubeMX, VOFA+, STM32G431）。\n"
++            "3. 只输出 Markdown 正文，不要包含外部思考标签或多余解释。"
++        )
++
++        user_content = (
++            f"视频标题: {title}\n"
++            f"领域: {domain}\n"
++            f"来源: {source}\n\n"
++            f"视频校正后字幕全文:\n{clean_transcript}\n"
++        )
++
++        try:
++            import openai
++
++            client = openai.OpenAI(api_key=key, base_url=url)
++            response = client.chat.completions.create(
++                model=target_model,
++                messages=[
++                    {"role": "system", "content": system_prompt},
++                    {"role": "user", "content": user_content},
++                ],
++                temperature=0.3,
++            )
++            content = response.choices[0].message.content or ""
++            return content.strip()
++        except Exception as e:
++            # Gracefully fallback to offline summary if LLM call fails
++            fallback_note = self.generate_offline_summary(
++                title=title,
++                subtitle_text=subtitle_text,
++                domain=domain,
++                source=source,
++                terms=terms,
++            )
++            warning_header = (
++                f"> [!WARNING]\n"
++                f"> 线上 LLM 接口调用失败 ({str(e)})，已自动切换为离线规则摘要生成。\n\n"
++            )
++            return warning_header + fallback_note
+diff --git a/scripts/pipeline.py b/scripts/pipeline.py
+new file mode 100644
+index 0000000..6c78d75
+--- /dev/null
++++ b/scripts/pipeline.py
+@@ -0,0 +1,216 @@
++"""End-to-end video knowledge extraction pipeline orchestrator."""
++
++import argparse
++import json
++import os
++import re
++import sys
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Callable, Dict, List, Optional
++
++from scripts.download_video import is_url, prepare_audio_source
++from scripts.extract_subtitle import fetch_online_subtitles
++from scripts.markdown_generator import MarkdownGenerator
++from scripts.subtitle_cleaner import SubtitleCleaner
++from scripts.whisper_transcribe import transcribe_audio
++
++
++@dataclass
++class PipelineResult:
++    """Dataclass holding all artifact paths produced by the pipeline."""
++
++    title: str
++    raw_srt_path: str
++    corrected_srt_path: str
++    notes_md_path: str
++    terms_json_path: str
++    terms_count: int
++    source: str
++    output_dir: str
++    error: Optional[str] = None
++
++
++def sanitize_filename(name: str) -> str:
++    """Sanitize string to be safe for filesystem paths across Windows/Linux."""
++    cleaned = re.sub(r'[\\/*?:"<>|]', "_", name).strip()
++    cleaned = re.sub(r"\s+", "_", cleaned)
++    return cleaned[:80] if cleaned else "video_knowledge"
++
++
++class KnowledgeExtractionPipeline:
++    """Unified pipeline connecting subtitle extraction, glossary cleaner, and note generation."""
++
++    def __init__(
++        self,
++        output_base_dir: str = "./output",
++        domain: str = "motor-control",
++        glossary_path: Optional[str] = "config/glossary.json",
++        template_path: Optional[str] = "templates/note_template.md",
++    ):
++        self.output_base_dir = Path(output_base_dir)
++        self.domain = domain
++        self.glossary_path = glossary_path
++        self.cleaner = SubtitleCleaner(glossary=glossary_path, domain=domain)
++        self.generator = MarkdownGenerator(template_path=template_path)
++
++    def process(
++        self,
++        input_source: str,
++        domain: Optional[str] = None,
++        api_key: Optional[str] = None,
++        base_url: Optional[str] = None,
++        model: Optional[str] = None,
++        force_whisper: bool = False,
++        progress_callback: Optional[Callable[[str, float], None]] = None,
++    ) -> PipelineResult:
++        """Execute extraction pipeline on URL or local file."""
++        target_domain = domain or self.domain
++        if target_domain != self.domain:
++            self.cleaner = SubtitleCleaner(
++                glossary=self.glossary_path, domain=target_domain
++            )
++
++        source_is_url = is_url(input_source)
++        title = ""
++        raw_srt = ""
++
++        # Step 1: Subtitle acquisition
++        if progress_callback:
++            progress_callback("正在检测视频字幕...", 0.1)
++
++        sub_result = None
++        if source_is_url and not force_whisper:
++            try:
++                sub_result = fetch_online_subtitles(input_source)
++                if sub_result and sub_result.has_subtitles and sub_result.subtitle_text:
++                    raw_srt = sub_result.subtitle_text
++                    title = sub_result.title
++            except Exception:
++                sub_result = None
++
++        if not raw_srt:
++            # Fallback to audio extraction + Whisper ASR
++            if progress_callback:
++                progress_callback("未检测到原生字幕，正在准备音频进行语音识别...", 0.3)
++
++            downloads_dir = self.output_base_dir / "downloads"
++            downloads_dir.mkdir(parents=True, exist_ok=True)
++            audio_path = prepare_audio_source(input_source, str(downloads_dir))
++
++            if not title:
++                if sub_result and sub_result.title:
++                    title = sub_result.title
++                else:
++                    title = Path(input_source).stem
++
++            if progress_callback:
++                progress_callback("正在使用 Whisper 进行语音转写...", 0.5)
++
++            raw_srt = transcribe_audio(audio_path)
++
++        if not title:
++            title = "Video_Knowledge"
++
++        # Step 2: Terminology correction
++        if progress_callback:
++            progress_callback(f"正在进行领域术语校正 [{target_domain}]...", 0.7)
++
++        corrected_srt, terms = self.cleaner.clean_srt(raw_srt)
++
++        # Step 3: Markdown knowledge notes generation
++        if progress_callback:
++            progress_callback("正在整理结构化工程学习笔记...", 0.85)
++
++        notes_md = self.generator.generate_notes(
++            subtitle_text=corrected_srt,
++            title=title,
++            domain=target_domain,
++            source=input_source,
++            terms=terms,
++            api_key=api_key,
++            base_url=base_url,
++            model=model,
++        )
++
++        # Step 4: Persist all artifacts
++        safe_title = sanitize_filename(title)
++        video_out_dir = self.output_base_dir / safe_title
++        video_out_dir.mkdir(parents=True, exist_ok=True)
++
++        raw_srt_path = video_out_dir / f"{safe_title}_raw.srt"
++        corrected_srt_path = video_out_dir / f"{safe_title}_corrected.srt"
++        notes_md_path = video_out_dir / f"{safe_title}_notes.md"
++        terms_json_path = video_out_dir / f"{safe_title}_terms.json"
++
++        raw_srt_path.write_text(raw_srt, encoding="utf-8")
++        corrected_srt_path.write_text(corrected_srt, encoding="utf-8")
++        notes_md_path.write_text(notes_md, encoding="utf-8")
++
++        with open(terms_json_path, "w", encoding="utf-8") as f:
++            json.dump(
++                {
++                    "title": title,
++                    "domain": target_domain,
++                    "source": input_source,
++                    "terms": terms,
++                },
++                f,
++                ensure_ascii=False,
++                indent=2,
++            )
++
++        if progress_callback:
++            progress_callback("全部任务处理完成！", 1.0)
++
++        total_terms_count = sum(t.get("count", 0) for t in terms)
++
++        return PipelineResult(
++            title=title,
++            raw_srt_path=str(raw_srt_path),
++            corrected_srt_path=str(corrected_srt_path),
++            notes_md_path=str(notes_md_path),
++            terms_json_path=str(terms_json_path),
++            terms_count=total_terms_count,
++            source=input_source,
++            output_dir=str(video_out_dir),
++        )
++
++
++def main():
++    """CLI entry point for video knowledge extractor pipeline."""
++    parser = argparse.ArgumentParser(
++        description="Video Knowledge Extractor: Extract subtitles, correct domain terms, generate notes."
++    )
++    parser.add_argument("source", help="Video URL (Bilibili/YouTube) or path to local video/audio file")
++    parser.add_argument("--domain", default="motor-control", help="Domain glossary (motor-control, general-tech)")
++    parser.add_argument("--output", default="./output", help="Output directory")
++    parser.add_argument("--api-key", default=None, help="OpenAI-compatible API key")
++    parser.add_argument("--base-url", default=None, help="OpenAI-compatible Base URL")
++    parser.add_argument("--model", default=None, help="Model name (e.g. gpt-4o, deepseek-chat)")
++    parser.add_argument("--force-whisper", action="store_true", help="Force Whisper transcription instead of online subtitles")
++
++    args = parser.parse_args()
++
++    pipeline = KnowledgeExtractionPipeline(output_base_dir=args.output, domain=args.domain)
++    print(f"[+] Starting extraction for: {args.source}")
++    result = pipeline.process(
++        input_source=args.source,
++        domain=args.domain,
++        api_key=args.api_key,
++        base_url=args.base_url,
++        model=args.model,
++        force_whisper=args.force_whisper,
++        progress_callback=lambda msg, progress: print(f"[{int(progress*100)}%] {msg}"),
++    )
++
++    print("\n[+] 知识提取完成!")
++    print(f"  - 视频标题: {result.title}")
++    print(f"  - 原始字幕: {result.raw_srt_path}")
++    print(f"  - 校正字幕: {result.corrected_srt_path}")
++    print(f"  - 学习笔记: {result.notes_md_path}")
++    print(f"  - 术语统计: {result.terms_json_path} (匹配 {result.terms_count} 处)")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/subtitle_cleaner.py b/scripts/subtitle_cleaner.py
+new file mode 100644
+index 0000000..c89f13a
+--- /dev/null
++++ b/scripts/subtitle_cleaner.py
+@@ -0,0 +1,165 @@
++"""Subtitle cleaner with domain glossary terminology correction."""
++
++import json
++import re
++from pathlib import Path
++from typing import Any, Dict, List, Optional, Tuple, Union
++
++
++class SubtitleCleaner:
++    """Clean subtitles and correct domain terminology based on glossary."""
++
++    def __init__(
++        self,
++        glossary: Optional[Union[str, Path, Dict[str, Any]]] = None,
++        domain: Optional[str] = "motor-control",
++    ):
++        """Initialize cleaner with glossary dictionary or path."""
++        self.domain = domain
++        self.glossary_map = self._load_glossary(glossary)
++        self._compiled_patterns = self._compile_patterns(self.glossary_map)
++
++    def _load_glossary(
++        self, glossary: Optional[Union[str, Path, Dict[str, Any]]]
++    ) -> Dict[str, str]:
++        """Load and normalize glossary dictionary."""
++        raw_data: Dict[str, Any] = {}
++        if glossary is None:
++            default_path = Path("config/glossary.json")
++            if default_path.exists():
++                with open(default_path, "r", encoding="utf-8") as f:
++                    raw_data = json.load(f)
++            else:
++                raw_data = {}
++        elif isinstance(glossary, (str, Path)):
++            with open(glossary, "r", encoding="utf-8") as f:
++                raw_data = json.load(f)
++        elif isinstance(glossary, dict):
++            raw_data = glossary
++
++        term_map: Dict[str, str] = {}
++        if self.domain and self.domain in raw_data:
++            term_map.update(raw_data[self.domain])
++            if "general-tech" in raw_data and self.domain != "general-tech":
++                term_map.update(raw_data["general-tech"])
++        else:
++            # Flatten all domain dictionaries or handle direct key-value map
++            for k, v in raw_data.items():
++                if isinstance(v, dict):
++                    term_map.update(v)
++                else:
++                    term_map[k] = str(v)
++
++        return term_map
++
++    def _compile_patterns(
++        self, term_map: Dict[str, str]
++    ) -> List[Tuple[re.Pattern, str, str]]:
++        """Compile regex patterns sorted by term length descending."""
++        patterns = []
++        # Sort terms by length descending to match longer phrases first
++        sorted_terms = sorted(term_map.keys(), key=lambda x: len(x), reverse=True)
++
++        for term in sorted_terms:
++            target = term_map[term]
++            escaped_term = re.escape(term)
++            # If term contains space, allow flexible whitespace
++            escaped_term = escaped_term.replace(r"\ ", r"\s+")
++
++            # Check if term starts/ends with ASCII word characters for \b boundaries
++            has_word_start = bool(re.match(r"^\w", term, re.ASCII))
++            has_word_end = bool(re.search(r"\w$", term, re.ASCII))
++
++            pattern_str = ""
++            if has_word_start:
++                pattern_str += r"\b"
++            pattern_str += escaped_term
++            if has_word_end:
++                pattern_str += r"\b"
++
++            pattern = re.compile(pattern_str, re.IGNORECASE)
++            patterns.append((pattern, target, term))
++
++        return patterns
++
++    def clean_text(self, text: str) -> Tuple[str, List[Dict[str, Any]]]:
++        """Clean plain text and return cleaned text and replacement statistics."""
++        if not text:
++            return "", []
++
++        cleaned_text = text
++        stats_map: Dict[str, Dict[str, Any]] = {}
++
++        for pattern, replacement, original_term in self._compiled_patterns:
++            matches = list(pattern.finditer(cleaned_text))
++            if matches:
++                count = len(matches)
++                cleaned_text = pattern.sub(replacement, cleaned_text)
++                if original_term not in stats_map:
++                    stats_map[original_term] = {
++                        "original": original_term,
++                        "replacement": replacement,
++                        "count": 0,
++                    }
++                stats_map[original_term]["count"] += count
++
++        return cleaned_text, list(stats_map.values())
++
++    def clean_srt(self, srt_content: str) -> Tuple[str, List[Dict[str, Any]]]:
++        """Clean an SRT file while strictly preserving timestamps and indices."""
++        if not srt_content or not srt_content.strip():
++            return "", []
++
++        # Standardize line breaks
++        normalized = srt_content.replace("\r\n", "\n").replace("\r", "\n")
++        raw_blocks = re.split(r"\n\s*\n", normalized.strip())
++
++        cleaned_blocks = []
++        aggregated_stats: Dict[str, Dict[str, Any]] = {}
++
++        timestamp_pattern = re.compile(
++            r"^\d{1,2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,\.]\d{3}"
++        )
++
++        for block in raw_blocks:
++            lines = block.strip().split("\n")
++            if not lines:
++                continue
++
++            cleaned_lines = []
++            is_text_section = False
++
++            for i, line in enumerate(lines):
++                line_stripped = line.strip()
++                # Check if it is an index line (e.g. "1")
++                if i == 0 and line_stripped.isdigit():
++                    cleaned_lines.append(line)
++                    continue
++
++                # Check if it is a timestamp line (e.g. "00:00:01,000 --> 00:00:04,000")
++                if timestamp_pattern.search(line_stripped):
++                    cleaned_lines.append(line)
++                    is_text_section = True
++                    continue
++
++                # Subtitle text lines
++                if is_text_section or (i >= 2):
++                    cleaned_line, block_stats = self.clean_text(line)
++                    cleaned_lines.append(cleaned_line)
++                    for stat in block_stats:
++                        term = stat["original"]
++                        if term not in aggregated_stats:
++                            aggregated_stats[term] = {
++                                "original": stat["original"],
++                                "replacement": stat["replacement"],
++                                "count": 0,
++                            }
++                        aggregated_stats[term]["count"] += stat["count"]
++                else:
++                    # Fallback for irregular block headers
++                    cleaned_lines.append(line)
++
++            cleaned_blocks.append("\n".join(cleaned_lines))
++
++        result_srt = "\n\n".join(cleaned_blocks) + "\n"
++        return result_srt, list(aggregated_stats.values())
+diff --git a/scripts/whisper_transcribe.py b/scripts/whisper_transcribe.py
+new file mode 100644
+index 0000000..8f136fa
+--- /dev/null
++++ b/scripts/whisper_transcribe.py
+@@ -0,0 +1,104 @@
++"""Whisper ASR transcription module supporting faster-whisper and openai-whisper."""
++
++import math
++from typing import Any, Iterable, List, Optional
++
++
++def format_seconds_to_srt_timestamp(seconds: float) -> str:
++    """Convert floating-point seconds into SRT timestamp format HH:MM:SS,mmm."""
++    if seconds < 0:
++        seconds = 0.0
++
++    total_ms = int(round(seconds * 1000))
++    ms = total_ms % 1000
++    total_seconds = total_ms // 1000
++    sec = total_seconds % 60
++    total_minutes = total_seconds // 60
++    minute = total_minutes % 60
++    hour = total_minutes // 60
++
++    return f"{hour:02d}:{minute:02d}:{sec:02d},{ms:03d}"
++
++
++def segments_to_srt(segments: Iterable[Any]) -> str:
++    """Format segments with .start, .end, and .text into standard numbered SRT."""
++    blocks: List[str] = []
++    seq = 1
++
++    for seg in segments:
++        text = getattr(seg, "text", "").strip()
++        if not text:
++            continue
++
++        start_ts = format_seconds_to_srt_timestamp(getattr(seg, "start", 0.0))
++        end_ts = format_seconds_to_srt_timestamp(getattr(seg, "end", 0.0))
++
++        block = f"{seq}\n{start_ts} --> {end_ts}\n{text}"
++        blocks.append(block)
++        seq += 1
++
++    return "\n\n".join(blocks) + "\n" if blocks else ""
++
++
++def _get_faster_whisper_model(
++    model_size: str = "base", device: str = "auto", compute_type: str = "auto"
++):
++    """Factory helper to obtain a faster_whisper WhisperModel instance."""
++    from faster_whisper import WhisperModel
++
++    return WhisperModel(model_size, device=device, compute_type=compute_type)
++
++
++def transcribe_audio(
++    audio_path: str,
++    model_size: str = "base",
++    device: str = "auto",
++    language: Optional[str] = "zh",
++    initial_prompt: Optional[str] = None,
++) -> str:
++    """Transcribe an audio file to SRT using faster-whisper or openai-whisper."""
++    # 1. Try faster-whisper
++    try:
++        model = _get_faster_whisper_model(model_size, device=device)
++        transcribe_kwargs = {}
++        if language:
++            transcribe_kwargs["language"] = language
++        if initial_prompt:
++            transcribe_kwargs["initial_prompt"] = initial_prompt
++
++        segments, info = model.transcribe(audio_path, **transcribe_kwargs)
++        return segments_to_srt(segments)
++    except (ImportError, ModuleNotFoundError):
++        pass
++
++    # 2. Try standard openai-whisper fallback
++    try:
++        import whisper
++
++        model = whisper.load_model(model_size)
++        transcribe_kwargs = {}
++        if language:
++            transcribe_kwargs["language"] = language
++        if initial_prompt:
++            transcribe_kwargs["initial_prompt"] = initial_prompt
++
++        result = model.transcribe(audio_path, **transcribe_kwargs)
++        raw_segments = result.get("segments", [])
++
++        # Adapt dictionary segments
++        class DictSegment:
++            def __init__(self, d):
++                self.start = d.get("start", 0.0)
++                self.end = d.get("end", 0.0)
++                self.text = d.get("text", "")
++
++        adapted = [DictSegment(s) for s in raw_segments]
++        return segments_to_srt(adapted)
++    except (ImportError, ModuleNotFoundError):
++        pass
++
++    raise RuntimeError(
++        "No Whisper transcription backend found. "
++        "Please install faster-whisper (`pip install faster-whisper`) "
++        "or openai-whisper (`pip install -U openai-whisper`)."
++    )
+diff --git a/templates/README.md b/templates/README.md
+new file mode 100644
+index 0000000..fa61ad2
+--- /dev/null
++++ b/templates/README.md
+@@ -0,0 +1,3 @@
++# Templates 目录职责
++存放结构化技术笔记与摘要生成的 Markdown 模板。
++- `note_template.md`: 技术视频核心知识笔记模板。
+diff --git a/templates/note_template.md b/templates/note_template.md
+new file mode 100644
+index 0000000..0df8361
+--- /dev/null
++++ b/templates/note_template.md
+@@ -0,0 +1,40 @@
++# {{title}}
++
++> **提取时间**：{{timestamp}}  
++> **领域分类**：{{domain}}  
++> **视频来源**：{{source}}
++
++---
++
++## 1. 核心概览 (Overview)
++{{overview}}
++
++---
++
++## 2. 工具链与环境 (Toolchain & Environment)
++{{toolchain}}
++
++---
++
++## 3. 关键配置与硬件参数 (Configurations & Parameters)
++{{configurations}}
++
++---
++
++## 4. 核心原理解析 (Key Concepts & Principles)
++{{principles}}
++
++---
++
++## 5. 开发流程与核心代码 (Workflow & Implementation)
++{{workflow}}
++
++---
++
++## 6. 避坑指南与重点提醒 (Gotchas & Highlights)
++{{highlights}}
++
++---
++
++## 7. 专业术语对照表 (Terminology Reference)
++{{terminology}}
+diff --git a/tests/test_environment.py b/tests/test_environment.py
+new file mode 100644
+index 0000000..0e16af8
+--- /dev/null
++++ b/tests/test_environment.py
+@@ -0,0 +1,29 @@
++import json
++from pathlib import Path
++
++
++def test_glossary_configuration_exists_and_valid():
++    config_path = Path("config/glossary.json")
++    assert config_path.exists(), "config/glossary.json must exist"
++    
++    with open(config_path, "r", encoding="utf-8") as f:
++        data = json.load(f)
++        
++    assert "motor-control" in data, "motor-control domain must be in glossary.json"
++    assert "general-tech" in data, "general-tech domain must be in glossary.json"
++    
++    mc_terms = data["motor-control"]
++    assert "foo c" in mc_terms or "foc" in mc_terms
++    assert mc_terms.get("foo c") == "FOC" or mc_terms.get("foc") == "FOC"
++    assert mc_terms.get("cooper mix") == "CubeMX"
++    assert mc_terms.get("无法加") == "VOFA+"
++
++
++def test_note_template_exists_and_has_required_sections():
++    template_path = Path("templates/note_template.md")
++    assert template_path.exists(), "templates/note_template.md must exist"
++    
++    content = template_path.read_text(encoding="utf-8")
++    assert "{{title}}" in content or "# " in content
++    assert "工具链" in content or "Toolchain" in content
++    assert "核心" in content or "Concepts" in content
+diff --git a/tests/test_extract_subtitle.py b/tests/test_extract_subtitle.py
+new file mode 100644
+index 0000000..54b7508
+--- /dev/null
++++ b/tests/test_extract_subtitle.py
+@@ -0,0 +1,52 @@
++import pytest
++from scripts.extract_subtitle import vtt_to_srt, SubtitleResult
++
++
++def test_vtt_to_srt_conversion():
++    vtt_text = """WEBVTT
++Kind: captions
++Language: zh
++
++00:00:01.200 --> 00:00:03.500 position:10%
++欢迎来到本期视频
++
++00:00:04.100 --> 00:00:07.800
++<c>学习</c>电机控制算法
++"""
++    srt = vtt_to_srt(vtt_text)
++    
++    assert "1\n00:00:01,200 --> 00:00:03,500\n欢迎来到本期视频" in srt.replace("\r\n", "\n")
++    assert "2\n00:00:04,100 --> 00:00:07,800\n学习电机控制算法" in srt.replace("\r\n", "\n")
++    assert "WEBVTT" not in srt
++    assert "<c>" not in srt
++    assert "position:" not in srt
++
++
++def test_vtt_to_srt_handles_already_indexed_vtt():
++    vtt_text = """WEBVTT
++
++1
++00:01:05.000 --> 00:01:08.500
++第一步：初始化系统时钟
++
++2
++00:01:09.000 --> 00:01:12.000
++第二步：配置定时器通道
++"""
++    srt = vtt_to_srt(vtt_text)
++    assert "1\n00:01:05,000 --> 00:01:08,500\n第一步：初始化系统时钟" in srt.replace("\r\n", "\n")
++    assert "2\n00:01:09,000 --> 00:01:12,000\n第二步：配置定时器通道" in srt.replace("\r\n", "\n")
++
++
++def test_subtitle_result_dataclass():
++    res = SubtitleResult(
++        has_subtitles=True,
++        title="FOC教程",
++        duration=120.5,
++        subtitle_text="1\n00:00:01,000 --> 00:00:02,000\n测试",
++        language="zh-Hans",
++        source_url="https://example.com"
++    )
++    assert res.has_subtitles is True
++    assert res.title == "FOC教程"
++    assert "测试" in res.subtitle_text
+diff --git a/tests/test_markdown_generator.py b/tests/test_markdown_generator.py
+new file mode 100644
+index 0000000..4618f55
+--- /dev/null
++++ b/tests/test_markdown_generator.py
+@@ -0,0 +1,67 @@
++from unittest.mock import MagicMock, patch
++import pytest
++from scripts.markdown_generator import MarkdownGenerator
++
++
++def test_extract_clean_text_from_srt():
++    gen = MarkdownGenerator()
++    srt = """1
++00:00:01,000 --> 00:00:03,000
++欢迎学习 FOC 算法
++
++2
++00:00:04,000 --> 00:00:06,500
++接下来打开 CubeMX 进行配置
++"""
++    clean_text = gen.extract_clean_text_from_srt(srt)
++    assert "欢迎学习 FOC 算法" in clean_text
++    assert "接下来打开 CubeMX 进行配置" in clean_text
++    assert "00:00:01,000" not in clean_text
++    assert "1\n" not in clean_text
++
++
++def test_generate_offline_summary_fills_template():
++    gen = MarkdownGenerator()
++    srt = """1
++00:00:01,000 --> 00:00:03,000
++本节课讲 STM32G431 的 FOC 驱动开发，使用 CubeMX 和 Keil uVision
++"""
++    terms = [
++        {"original": "foo c", "replacement": "FOC", "count": 2},
++        {"original": "cooper mix", "replacement": "CubeMX", "count": 1}
++    ]
++    notes = gen.generate_offline_summary(
++        title="STM32 FOC实战",
++        subtitle_text=srt,
++        domain="motor-control",
++        source="https://bilibili.com/video/BV123",
++        terms=terms
++    )
++    
++    assert "# STM32 FOC实战" in notes
++    assert "motor-control" in notes
++    assert "CubeMX" in notes
++    assert "FOC" in notes
++    assert "专业术语对照表" in notes or "Terminology" in notes
++
++
++def test_generate_notes_calls_openai_when_key_present():
++    gen = MarkdownGenerator()
++    fake_completion = MagicMock()
++    fake_completion.choices = [
++        MagicMock(message=MagicMock(content="# AI 生成的 FOC 核心笔记\n\n## 1. 核心概览\n原理详解"))
++    ]
++    
++    with patch("openai.OpenAI") as mock_openai_cls:
++        mock_client = MagicMock()
++        mock_client.chat.completions.create.return_value = fake_completion
++        mock_openai_cls.return_value = mock_client
++        
++        result = gen.generate_notes(
++            subtitle_text="1\n00:00:01,000 --> 00:00:03,000\nFOC算法内容",
++            title="测试课程",
++            api_key="sk-fake-key",
++            model="gpt-4o"
++        )
++        assert "# AI 生成的 FOC 核心笔记" in result
++        mock_client.chat.completions.create.assert_called_once()
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+new file mode 100644
+index 0000000..95de4e1
+--- /dev/null
++++ b/tests/test_pipeline.py
+@@ -0,0 +1,61 @@
++from pathlib import Path
++from unittest.mock import patch, MagicMock
++import pytest
++from scripts.pipeline import KnowledgeExtractionPipeline, PipelineResult
++from scripts.extract_subtitle import SubtitleResult
++
++
++def test_pipeline_with_mocked_online_subtitle(tmp_path):
++    pipeline = KnowledgeExtractionPipeline(output_base_dir=str(tmp_path), domain="motor-control")
++    
++    mock_sub_result = SubtitleResult(
++        has_subtitles=True,
++        title="STM32G431 FOC入门教程",
++        duration=300.0,
++        subtitle_text="""1
++00:00:01,000 --> 00:00:04,000
++欢迎学习 foo c 课程，使用 cooper mix 进行配置。
++""",
++        language="zh-Hans",
++        source_url="https://www.bilibili.com/video/BV123456"
++    )
++    
++    with patch("scripts.pipeline.fetch_online_subtitles", return_value=mock_sub_result):
++        result = pipeline.process("https://www.bilibili.com/video/BV123456")
++        
++        assert isinstance(result, PipelineResult)
++        assert result.title == "STM32G431 FOC入门教程"
++        assert Path(result.raw_srt_path).exists()
++        assert Path(result.corrected_srt_path).exists()
++        assert Path(result.notes_md_path).exists()
++        assert Path(result.terms_json_path).exists()
++        
++        # Verify corrected srt content
++        corrected_content = Path(result.corrected_srt_path).read_text(encoding="utf-8")
++        assert "FOC" in corrected_content
++        assert "CubeMX" in corrected_content
++        assert "foo c" not in corrected_content
++        
++        # Verify markdown notes content
++        notes_content = Path(result.notes_md_path).read_text(encoding="utf-8")
++        assert "STM32G431 FOC入门教程" in notes_content
++        assert "FOC" in notes_content
++
++
++def test_pipeline_fallback_to_whisper_when_no_subtitles(tmp_path):
++    pipeline = KnowledgeExtractionPipeline(output_base_dir=str(tmp_path), domain="motor-control")
++    
++    no_sub_result = SubtitleResult(
++        has_subtitles=False,
++        title="无字幕视频",
++        source_url="https://example.com/no-sub"
++    )
++    
++    with patch("scripts.pipeline.fetch_online_subtitles", return_value=no_sub_result), \
++         patch("scripts.pipeline.prepare_audio_source", return_value="fake_audio.wav"), \
++         patch("scripts.pipeline.transcribe_audio", return_value="1\n00:00:01,000 --> 00:00:03,000\n测试转写 foo c"):
++        
++        result = pipeline.process("https://example.com/no-sub")
++        assert result.title == "无字幕视频"
++        assert Path(result.corrected_srt_path).exists()
++        assert "FOC" in Path(result.corrected_srt_path).read_text(encoding="utf-8")
+diff --git a/tests/test_subtitle_cleaner.py b/tests/test_subtitle_cleaner.py
+new file mode 100644
+index 0000000..5928670
+--- /dev/null
++++ b/tests/test_subtitle_cleaner.py
+@@ -0,0 +1,81 @@
++import pytest
++from scripts.subtitle_cleaner import SubtitleCleaner
++
++
++@pytest.fixture
++def sample_glossary():
++    return {
++        "motor-control": {
++            "foo c": "FOC",
++            "foc": "FOC",
++            "cooper mix": "CubeMX",
++            "cubemx": "CubeMX",
++            "无法加": "VOFA+",
++            "j link": "J-Link",
++            "clark变换": "Clarke变换",
++            "sv pwm": "SVPWM",
++            "马鞍波": "马鞍波",
++            "p i": "PI",
++            "g p i o": "GPIO",
++        }
++    }
++
++
++def test_clean_text_phrase_and_single_word(sample_glossary):
++    cleaner = SubtitleCleaner(glossary=sample_glossary, domain="motor-control")
++    raw_text = "今天我们讲一下 foo c 算法，配合 cooper mix 进行配置，最后用 无法加 观察波形。"
++    cleaned, matches = cleaner.clean_text(raw_text)
++    
++    assert "FOC" in cleaned
++    assert "CubeMX" in cleaned
++    assert "VOFA+" in cleaned
++    assert "foo c" not in cleaned
++    assert "cooper mix" not in cleaned
++    assert "无法加" not in cleaned
++    
++    term_map = {m["original"].lower(): m["replacement"] for m in matches}
++    assert term_map.get("foo c") == "FOC"
++    assert term_map.get("cooper mix") == "CubeMX"
++    assert term_map.get("无法加") == "VOFA+"
++
++
++def test_clean_text_case_insensitivity(sample_glossary):
++    cleaner = SubtitleCleaner(glossary=sample_glossary, domain="motor-control")
++    raw = "foc in lower and FOC in upper and Foo C mixed"
++    cleaned, _ = cleaner.clean_text(raw)
++    assert "FOC in lower and FOC in upper and FOC mixed" == cleaned
++
++
++def test_clean_srt_preserves_timestamps_and_indices(sample_glossary):
++    cleaner = SubtitleCleaner(glossary=sample_glossary, domain="motor-control")
++    raw_srt = """1
++00:00:01,000 --> 00:00:03,500
++欢迎来到 foo c 课程
++
++2
++00:00:04,000 --> 00:00:07,200
++打开 cooper mix 配置 g p i o
++
++3
++00:00:08,000 --> 00:00:11,000
++使用 无法加 观察 sv pwm 波形
++"""
++    cleaned_srt, matches = cleaner.clean_srt(raw_srt)
++    
++    # Verify timestamps are completely preserved
++    assert "00:00:01,000 --> 00:00:03,500" in cleaned_srt
++    assert "00:00:04,000 --> 00:00:07,200" in cleaned_srt
++    assert "00:00:08,000 --> 00:00:11,000" in cleaned_srt
++    
++    # Verify content updated
++    assert "欢迎来到 FOC 课程" in cleaned_srt
++    assert "打开 CubeMX 配置 GPIO" in cleaned_srt
++    assert "使用 VOFA+ 观察 SVPWM 波形" in cleaned_srt
++    
++    assert len(matches) >= 4
++
++
++def test_clean_empty_or_malformed_srt(sample_glossary):
++    cleaner = SubtitleCleaner(glossary=sample_glossary)
++    assert cleaner.clean_srt("") == ("", [])
++    assert cleaner.clean_text("") == ("", [])
+diff --git a/tests/test_whisper_transcribe.py b/tests/test_whisper_transcribe.py
+new file mode 100644
+index 0000000..a546331
+--- /dev/null
++++ b/tests/test_whisper_transcribe.py
+@@ -0,0 +1,40 @@
++from unittest.mock import MagicMock, patch
++import pytest
++from scripts.whisper_transcribe import format_seconds_to_srt_timestamp, segments_to_srt, transcribe_audio
++from scripts.download_video import prepare_audio_source
++
++
++def test_format_seconds_to_srt_timestamp():
++    assert format_seconds_to_srt_timestamp(0.0) == "00:00:00,000"
++    assert format_seconds_to_srt_timestamp(65.432) == "00:01:05,432"
++    assert format_seconds_to_srt_timestamp(3661.123) == "01:01:01,123"
++
++
++def test_segments_to_srt():
++    mock_segments = [
++        MagicMock(start=1.0, end=3.5, text=" 第一段语音内容 "),
++        MagicMock(start=4.0, end=7.2, text=" 第二段语音内容 "),
++    ]
++    srt = segments_to_srt(mock_segments)
++    assert "1\n00:00:01,000 --> 00:00:03,500\n第一段语音内容" in srt
++    assert "2\n00:00:04,000 --> 00:00:07,200\n第二段语音内容" in srt
++
++
++def test_transcribe_audio_uses_faster_whisper_mock():
++    mock_model = MagicMock()
++    mock_segments = [
++        MagicMock(start=0.5, end=2.0, text=" 测试转写 ")
++    ]
++    mock_model.transcribe.return_value = (iter(mock_segments), MagicMock(language="zh"))
++    
++    with patch("scripts.whisper_transcribe._get_faster_whisper_model", return_value=mock_model):
++        srt = transcribe_audio("fake_audio.wav", model_size="tiny")
++        assert "1\n00:00:00,500 --> 00:00:02,000\n测试转写" in srt
++
++
++def test_prepare_audio_source_handles_local_audio(tmp_path):
++    fake_file = tmp_path / "test.mp3"
++    fake_file.write_text("dummy")
++    
++    result_path = prepare_audio_source(str(fake_file), str(tmp_path))
++    assert result_path == str(fake_file)
+diff --git a/ui/README.md b/ui/README.md
+new file mode 100644
+index 0000000..38839a0
+--- /dev/null
++++ b/ui/README.md
+@@ -0,0 +1,3 @@
++# UI 目录职责
++存放前端交互界面与应用启动入口。
++- `app.py`: 基于 Streamlit 构建的现代交互式 Web 知识提取工作台。
+diff --git a/ui/__init__.py b/ui/__init__.py
+new file mode 100644
+index 0000000..0c9949f
+--- /dev/null
++++ b/ui/__init__.py
+@@ -0,0 +1 @@
++"""UI package for video knowledge extractor."""
+diff --git a/ui/app.py b/ui/app.py
+new file mode 100644
+index 0000000..4e1021b
+--- /dev/null
++++ b/ui/app.py
+@@ -0,0 +1,254 @@
++"""Streamlit Web UI for Video Knowledge Extractor."""
++
++import io
++import os
++import shutil
++import zipfile
++from pathlib import Path
++import streamlit as st
++
++from scripts.pipeline import KnowledgeExtractionPipeline, PipelineResult
++
++
++st.set_page_config(
++    page_title="Video Knowledge AI - 视频知识提取器",
++    page_icon="⚡",
++    layout="wide",
++    initial_sidebar_state="expanded",
++)
++
++# Custom CSS styling for a modern, high-tech interface
++st.markdown(
++    """
++    <style>
++    .main-title {
++        font-size: 2.2rem;
++        font-weight: 700;
++        background: linear-gradient(90deg, #3B82F6, #10B981);
++        -webkit-background-clip: text;
++        -webkit-text-fill-color: transparent;
++        margin-bottom: 0.2rem;
++    }
++    .sub-title {
++        color: #64748B;
++        font-size: 1.05rem;
++        margin-bottom: 1.8rem;
++    }
++    .metric-card {
++        background-color: rgba(30, 41, 59, 0.4);
++        border: 1px solid rgba(255, 255, 255, 0.1);
++        border-radius: 10px;
++        padding: 1rem;
++        text-align: center;
++    }
++    .stTabs [data-baseweb="tab-list"] {
++        gap: 12px;
++    }
++    .stTabs [data-baseweb="tab"] {
++        padding: 8px 16px;
++        border-radius: 6px;
++    }
++    </style>
++    """,
++    unsafe_allow_html=True,
++)
++
++# Sidebar Configuration
++with st.sidebar:
++    st.header("⚙️ 系统配置")
++
++    domain_choice = st.selectbox(
++        "🎯 领域专业词库",
++        options=["motor-control", "general-tech"],
++        format_func=lambda x: "电机控制与嵌入式 (FOC/STM32/ROS)" if x == "motor-control" else "通用技术与AI开发",
++    )
++
++    st.markdown("---")
++    st.subheader("🤖 LLM 智能整理配置")
++    st.caption("留空则自动降级为离线规则摘要生成。支持 DeepSeek、Qwen、OpenAI 等兼容接口。")
++
++    env_key = os.environ.get("OPENAI_API_KEY", "")
++    api_key_input = st.text_input(
++        "API Key",
++        value=env_key,
++        type="password",
++        placeholder="sk-...",
++        help="OpenAI 兼容 API 密钥",
++    )
++
++    env_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
++    base_url_input = st.text_input(
++        "Base URL",
++        value=env_base,
++        placeholder="https://api.deepseek.com/v1",
++        help="API 基础端点",
++    )
++
++    env_model = os.environ.get("OPENAI_MODEL", "gpt-4o")
++    model_input = st.text_input(
++        "Model Name",
++        value=env_model,
++        placeholder="deepseek-chat",
++        help="调用的模型标识",
++    )
++
++    st.markdown("---")
++    force_whisper = st.checkbox(
++        "强制启用 Whisper 本地转写",
++        value=False,
++        help="即使视频自带官方字幕，也强制使用本地 Whisper ASR 转录",
++    )
++
++
++# Header Area
++st.markdown('<div class="main-title">⚡ Video Knowledge Extractor</div>', unsafe_allow_html=True)
++st.markdown(
++    '<div class="sub-title">输入视频链接或上传音视频 ➜ 自动提取字幕 ➜ 领域专有名词纠错 ➜ 输出规范字幕与结构化工程学习笔记</div>',
++    unsafe_allow_html=True,
++)
++
++# Input Section
++col1, col2 = st.columns([1, 1], gap="large")
++
++with col1:
++    st.markdown("### 🌐 模式 A：视频 URL")
++    url_input = st.text_input(
++        "视频链接 (支持 B站、YouTube、Vimeo 等)",
++        placeholder="https://www.bilibili.com/video/BV...",
++        key="video_url",
++    )
++    st.caption("示例：STM32、FOC 驱动开发、电机控制或前沿 AI 论文精读视频")
++
++with col2:
++    st.markdown("### 📁 模式 B：本地音视频上传")
++    uploaded_file = st.file_uploader(
++        "选择本地视频或音频文件",
++        type=["mp4", "mkv", "avi", "mov", "mp3", "wav", "m4a", "flac"],
++        key="file_upload",
++    )
++    st.caption("支持常见格式，视频将自动通过 ffmpeg 抽离音频")
++
++start_btn = st.button("🚀 开始知识提取", type="primary", use_container_width=True)
++
++# Processing Logic
++if start_btn:
++    input_source = None
++    temp_file_path = None
++
++    if url_input and url_input.strip():
++        input_source = url_input.strip()
++    elif uploaded_file is not None:
++        temp_dir = Path("./temp_uploads")
++        temp_dir.mkdir(parents=True, exist_ok=True)
++        temp_file_path = temp_dir / uploaded_file.name
++        with open(temp_file_path, "wb") as f:
++            f.write(uploaded_file.getbuffer())
++        input_source = str(temp_file_path)
++    else:
++        st.warning("⚠️ 请在上方输入视频链接或上传本地音视频文件！")
++
++    if input_source:
++        progress_bar = st.progress(0.0)
++        status_text = st.empty()
++
++        def update_progress(msg: str, progress: float):
++            progress_bar.progress(progress)
++            status_text.info(f"⏳ {msg}")
++
++        try:
++            pipeline = KnowledgeExtractionPipeline(
++                output_base_dir="./output", domain=domain_choice
++            )
++            result = pipeline.process(
++                input_source=input_source,
++                domain=domain_choice,
++                api_key=api_key_input if api_key_input.strip() else None,
++                base_url=base_url_input if base_url_input.strip() else None,
++                model=model_input if model_input.strip() else None,
++                force_whisper=force_whisper,
++                progress_callback=update_progress,
++            )
++
++            progress_bar.progress(1.0)
++            status_text.success("🎉 提取与整理完成！")
++            st.session_state["last_result"] = result
++
++        except Exception as e:
++            progress_bar.empty()
++            status_text.error(f"❌ 处理发生错误: {str(e)}")
++            st.exception(e)
++
++# Results Display Area
++if "last_result" in st.session_state:
++    res: PipelineResult = st.session_state["last_result"]
++    st.markdown("---")
++    st.subheader(f"📖 提取成果: {res.title}")
++
++    # Metrics Summary
++    m1, m2, m3, m4 = st.columns(4)
++    with m1:
++        st.metric("领域分类", domain_choice)
++    with m2:
++        st.metric("术语校正命中", f"{res.terms_count} 处")
++    with m3:
++        st.metric("产物存储目录", Path(res.output_dir).name)
++    with m4:
++        # Create ZIP download
++        zip_buffer = io.BytesIO()
++        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
++            for p in [res.raw_srt_path, res.corrected_srt_path, res.notes_md_path, res.terms_json_path]:
++                if Path(p).exists():
++                    zip_file.write(p, arcname=Path(p).name)
++        zip_buffer.seek(0)
++        st.download_button(
++            label="📦 一键打包下载全部产物 (ZIP)",
++            data=zip_buffer,
++            file_name=f"{Path(res.output_dir).name}_knowledge.zip",
++            mime="application/zip",
++            use_container_width=True,
++        )
++
++    # Content Tabs
++    tab_notes, tab_corrected, tab_raw, tab_terms = st.tabs(
++        ["📚 AI 整理学习笔记", "✨ 校正版字幕 (.srt)", "📝 原始字幕 (.srt)", "🔍 术语命中表 (.json)"]
++    )
++
++    with tab_notes:
++        notes_content = Path(res.notes_md_path).read_text(encoding="utf-8")
++        st.download_button(
++            "📥 下载学习笔记 (.md)",
++            data=notes_content,
++            file_name=Path(res.notes_md_path).name,
++            mime="text/markdown",
++        )
++        st.markdown(notes_content)
++
++    with tab_corrected:
++        corr_content = Path(res.corrected_srt_path).read_text(encoding="utf-8")
++        st.download_button(
++            "📥 下载校正版字幕 (.srt)",
++            data=corr_content,
++            file_name=Path(res.corrected_srt_path).name,
++            mime="text/plain",
++        )
++        st.text_area("校正版字幕内容", corr_content, height=400)
++
++    with tab_raw:
++        raw_content = Path(res.raw_srt_path).read_text(encoding="utf-8")
++        st.download_button(
++            "📥 下载原始字幕 (.srt)",
++            data=raw_content,
++            file_name=Path(res.raw_srt_path).name,
++            mime="text/plain",
++        )
++        st.text_area("原始字幕内容", raw_content, height=400)
++
++    with tab_terms:
++        terms_content = Path(res.terms_json_path).read_text(encoding="utf-8")
++        st.download_button(
++            "📥 下载术语数据 (.json)",
++            data=terms_content,
++            file_name=Path(res.terms_json_path).name,
++            mime="application/json",
++        )
++        st.json(terms_content)
+~~~
