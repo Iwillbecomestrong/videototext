@@ -17,6 +17,7 @@ class SubtitleResult:
     subtitle_text: Optional[str] = None
     language: Optional[str] = None
     source_url: str = ""
+    provider: str = "generic"
     error: Optional[str] = None
 
 
@@ -25,10 +26,8 @@ def format_srt_timestamp(ts: str) -> str:
     ts = ts.strip().replace(".", ",")
     parts = ts.split(":")
     if len(parts) == 2:
-        # mm:ss,xxx -> 00:mm:ss,xxx
         return f"00:{parts[0].zfill(2)}:{parts[1]}"
     elif len(parts) == 3:
-        # hh:mm:ss,xxx -> hh(2):mm(2):ss,xxx
         return f"{parts[0].zfill(2)}:{parts[1].zfill(2)}:{parts[2]}"
     return ts
 
@@ -90,7 +89,6 @@ def vtt_to_srt(vtt_content: str) -> str:
     while i < total:
         line = lines[i].strip()
 
-        # Skip WebVTT header and styling notes
         if (
             line.startswith("WEBVTT")
             or line.startswith("NOTE")
@@ -102,7 +100,6 @@ def vtt_to_srt(vtt_content: str) -> str:
 
         ts_match = timestamp_pattern.search(line)
         if ts_match:
-            # If we had a previous block, record it preserving internal line breaks
             if current_timestamp and current_lines:
                 text = "\n".join([l for l in current_lines if l])
                 blocks.append((current_timestamp, text))
@@ -122,9 +119,7 @@ def vtt_to_srt(vtt_content: str) -> str:
                     current_timestamp = ""
                     current_lines = []
             else:
-                # Clean inline tags and styling from text
                 cleaned_line = tag_pattern.sub("", line).strip()
-                # Ignore isolated numeric index lines in source VTT
                 if not (cleaned_line.isdigit() and len(current_lines) == 0):
                     if cleaned_line:
                         current_lines.append(cleaned_line)
@@ -134,7 +129,6 @@ def vtt_to_srt(vtt_content: str) -> str:
         text = "\n".join([l for l in current_lines if l])
         blocks.append((current_timestamp, text))
 
-    # Build standard numbered SRT blocks
     srt_blocks = []
     seq = 1
     for ts, text in blocks:
@@ -146,15 +140,104 @@ def vtt_to_srt(vtt_content: str) -> str:
     return "\n\n".join(srt_blocks) + "\n" if srt_blocks else ""
 
 
+def fetch_bilibili_native_subtitles(
+    bvid: str, cookies: Optional[str] = None
+) -> Optional[SubtitleResult]:
+    """Fetch Bilibili subtitles directly via Bilibili Web API."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://www.bilibili.com",
+        }
+        if cookies:
+            headers["Cookie"] = cookies
+
+        # 1. Fetch video info to obtain cid and subtitle list
+        info_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+        req = urllib.request.Request(info_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        if data.get("code") != 0 or "data" not in data:
+            return None
+
+        video_data = data["data"]
+        title = video_data.get("title", "")
+        duration = float(video_data.get("duration", 0.0))
+
+        subtitle_info = video_data.get("subtitle", {})
+        subtitles_list = subtitle_info.get("subtitles", [])
+
+        if not subtitles_list:
+            # Try player v2 endpoint if cid exists
+            cid = video_data.get("cid")
+            if cid:
+                player_url = f"https://api.bilibili.com/x/player/v2?cid={cid}&bvid={bvid}"
+                req_p = urllib.request.Request(player_url, headers=headers)
+                with urllib.request.urlopen(req_p, timeout=10) as resp_p:
+                    p_data = json.loads(resp_p.read().decode("utf-8"))
+                    if p_data.get("code") == 0 and "data" in p_data:
+                        subtitles_list = p_data["data"].get("subtitle", {}).get("subtitles", [])
+
+        if not subtitles_list:
+            return None
+
+        # Pick first available subtitle (prefers zh-CN / ai-zh)
+        chosen_sub = subtitles_list[0]
+        for sub in subtitles_list:
+            if "zh" in sub.get("lan", "") or "中文" in sub.get("lan_doc", ""):
+                chosen_sub = sub
+                break
+
+        sub_url = chosen_sub.get("subtitle_url", "")
+        if sub_url.startswith("//"):
+            sub_url = "https:" + sub_url
+
+        if not sub_url:
+            return None
+
+        sub_req = urllib.request.Request(sub_url, headers=headers)
+        with urllib.request.urlopen(sub_req, timeout=10) as s_resp:
+            sub_json = json.loads(s_resp.read().decode("utf-8"))
+
+        srt_text = bilibili_json_to_srt(sub_json)
+        if srt_text:
+            return SubtitleResult(
+                has_subtitles=True,
+                title=title,
+                duration=duration,
+                subtitle_text=srt_text,
+                language=chosen_sub.get("lan", "zh"),
+                source_url=f"https://www.bilibili.com/video/{bvid}",
+                provider="bilibili_native",
+            )
+    except Exception:
+        return None
+
+    return None
+
+
 def fetch_online_subtitles(
     url: str,
     langs: Optional[List[str]] = None,
     cookies: Optional[str] = None,
 ) -> SubtitleResult:
-    """Fetch online video subtitles (Bilibili/YouTube) using yt-dlp if available."""
+    """Fetch online video subtitles (Bilibili native API / yt-dlp fallback)."""
     if langs is None:
         langs = ["ai-zh", "zh-Hans", "zh-CN", "zh", "en", "en-US"]
 
+    is_bilibili = "bilibili.com" in url or "b23.tv" in url
+
+    # Fast path: Bilibili Native API Provider
+    if is_bilibili:
+        bv_match = re.search(r"(BV[a-zA-Z0-9]{10})", url)
+        if bv_match:
+            bvid = bv_match.group(1)
+            native_res = fetch_bilibili_native_subtitles(bvid, cookies=cookies)
+            if native_res and native_res.has_subtitles:
+                return native_res
+
+    # General path: yt-dlp provider
     try:
         import yt_dlp
     except ImportError:
@@ -163,8 +246,6 @@ def fetch_online_subtitles(
             source_url=url,
             error="yt-dlp is not installed. Run `pip install yt-dlp` to extract online subtitles.",
         )
-
-    is_bilibili = "bilibili.com" in url or "b23.tv" in url
 
     ydl_opts = {
         "skip_download": True,
@@ -176,7 +257,6 @@ def fetch_online_subtitles(
         if isinstance(cookies, str) and (cookies.endswith(".txt") or "/" in cookies or "\\" in cookies):
             ydl_opts["cookiefile"] = cookies
         else:
-            # Pass custom cookie header if string
             ydl_opts["http_headers"] = {"Cookie": cookies}
 
     try:
@@ -192,7 +272,6 @@ def fetch_online_subtitles(
             title = info.get("title", "Unknown Title")
             duration = float(info.get("duration") or 0.0)
 
-            # Look for requested language subtitles: official first, then automatic
             subtitles = info.get("subtitles") or {}
             auto_subs = info.get("automatic_captions") or {}
 
@@ -200,12 +279,10 @@ def fetch_online_subtitles(
             chosen_ext = "vtt"
             chosen_lang = None
 
-            # Flatten lookup
             for lang in langs:
                 for sub_dict in [subtitles, auto_subs]:
                     if lang in sub_dict and sub_dict[lang]:
                         formats = sub_dict[lang]
-                        # Prefer json (bilibili) / vtt / srt
                         json_fmt = next((f for f in formats if f.get("ext") in ["json", "json3"]), None)
                         vtt_fmt = next((f for f in formats if f.get("ext") == "vtt"), None)
                         srt_fmt = next((f for f in formats if f.get("ext") == "srt"), None)
@@ -226,10 +303,10 @@ def fetch_online_subtitles(
                     title=title,
                     duration=duration,
                     source_url=url,
+                    provider="yt_dlp",
                     error=f"No official or auto-generated subtitle found in specified languages.{hint}",
                 )
 
-            # Fetch the subtitle content
             headers = {"User-Agent": "Mozilla/5.0"}
             if cookies and isinstance(cookies, str) and not (cookies.endswith(".txt")):
                 headers["Cookie"] = cookies
@@ -261,6 +338,7 @@ def fetch_online_subtitles(
                 subtitle_text=srt_text,
                 language=chosen_lang,
                 source_url=url,
+                provider="yt_dlp",
             )
 
     except Exception as e:
@@ -270,5 +348,6 @@ def fetch_online_subtitles(
         return SubtitleResult(
             has_subtitles=False,
             source_url=url,
+            provider="yt_dlp",
             error=f"Error extracting subtitle: {str(e)}{hint}",
         )
